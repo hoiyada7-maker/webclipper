@@ -38,7 +38,7 @@ Clipboard HTML
 
 **`html_replacer.py`** — BeautifulSoup replaces `<img src>` / `data-src` / `data-original` attributes; regex replaces `background-image: url(...)` in inline styles.
 
-**`md_converter.py`** — `SiemensMarkdownConverter` subclasses `markdownify.MarkdownConverter` with custom handlers for `<img>`, `<del>`, `<mark>`, `<br>`, and `<table>`. Post-processes the output with regex cleanup.
+**`md_converter.py`** — `WebClipperMarkdownConverter` subclasses `markdownify.MarkdownConverter` with custom handlers for `<img>`, `<del>`, `<mark>`, `<br>`, and `<table>`. Post-processes the output with regex cleanup.
 
 **`templates/index.html`** — Jinja2 template with vanilla JS WebSocket client that streams real-time logs from the server during pipeline execution.
 

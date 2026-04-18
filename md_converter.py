@@ -6,7 +6,7 @@ from markdownify import markdownify as md, MarkdownConverter
 # ──────────────────────────────────────────────
 # 커스텀 MarkdownConverter 확장
 # ──────────────────────────────────────────────
-class SiemensMarkdownConverter(MarkdownConverter):
+class WebClipperMarkdownConverter(MarkdownConverter):
     """
     markdownify 기본 변환기를 확장하여
     아래 항목들을 보완합니다.
@@ -136,7 +136,7 @@ def convert_html_to_markdown(
     keep_inline_imgs : bool = True,           # 인라인 이미지 유지
 ) -> str:
     """
-    SiemensMarkdownConverter를 사용하여 HTML을 Markdown으로 변환합니다.
+    WebClipperMarkdownConverter를 사용하여 HTML을 Markdown으로 변환합니다.
 
     Parameters
     ----------
@@ -157,7 +157,7 @@ def convert_html_to_markdown(
         "iframe", "svg",
     ]
 
-    converter = SiemensMarkdownConverter(
+    converter = WebClipperMarkdownConverter(
         heading_style = heading_style,
         bullets       = bullets,
         code_language = code_language,
