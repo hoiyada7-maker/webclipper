@@ -1,0 +1,1240 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Web Clipper</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+  <div class="app">
+
+    <!-- ── 헤더 ── -->
+    <header class="header">
+      <h1>✂️ Web Clipper</h1>
+      <p class="subtitle">클립보드 HTML → 이미지 다운로드 → 경로 치환 → Markdown 변환 → Base64 임베드</p>
+    </header>
+
+    <main class="main">
+
+      <!-- ── 좌측 패널 ── -->
+      <section class="panel panel--left">
+
+        <!-- 좌측 탭 바 -->
+        <div class="left-tab-bar">
+          <button class="left-tab active" data-ltab="pipeline">웹클리퍼</button>
+          <button class="left-tab"        data-ltab="embed">이미지 포함 MD로 변환</button>
+          <button class="left-tab"        data-ltab="extract">이미지를 주소로 연결한 MD로 변환</button>
+          <button class="left-tab"        data-ltab="text-extract">각각의 이미지에서 글자/이미지 추출하여 MD로 변환</button>
+        </div>
+
+        <!-- ── 탭 1: 웹클리퍼 ── -->
+        <div class="left-tab-content active" id="ltab-pipeline">
+
+          <!-- 클립보드 미리보기 -->
+          <div class="card">
+            <div class="card__header">
+              <span>📋 클립보드 정보 가져오기</span>
+              <button class="btn btn--sm btn--primary" id="btnReadClipboard" style="width:50%;">클립보드 읽기</button>
+            </div>
+            <div class="card__body">
+              <div id="clipboardStatus" class="status status--idle">대기 중...</div>
+              <div class="tab-bar">
+                <button class="tab"        data-tab="source">소스</button>
+                <button class="tab active" data-tab="render">렌더링</button>
+              </div>
+              <div class="tab-content" id="tab-source">
+                <textarea id="htmlSource" class="code-view" readonly
+                          placeholder="클립보드 HTML 소스가 여기에 표시됩니다..."></textarea>
+              </div>
+              <div class="tab-content active" id="tab-render">
+                <iframe id="htmlRender" class="render-frame"
+                        sandbox="allow-same-origin"></iframe>
+              </div>
+            </div>
+          </div>
+
+          <!-- 스크롤 버튼 -->
+          <div class="scroll-row">
+            <button class="btn btn--secondary btn--full" id="btnScrollStart">
+              🖱️ Tab 2 자동 스크롤 시작
+            </button>
+          </div>
+
+          <!-- 출력 형식 토글 -->
+          <div class="output-toggle-group">
+            <button class="toggle-btn active" id="togHtml">HTML생성</button>
+            <button class="toggle-btn active" id="togMdExtract">MD(이미지링크)생성</button>
+            <button class="toggle-btn active" id="togMdEmbed">MD(이미지포함)생성</button>
+          </div>
+
+          <!-- 실행 버튼 -->
+          <button class="btn btn--primary btn--full" id="btnProcess" disabled>
+            ▶ MD파일 만들기 실행
+          </button>
+
+        </div><!-- /ltab-pipeline -->
+
+        <!-- ── 탭 2: MD(이미지포함)추출 ── -->
+        <div class="left-tab-content" id="ltab-embed">
+
+          <div class="card">
+            <div class="card__header">📎 MD 이미지 Base64 임베드</div>
+            <div class="card__body">
+              <p class="hint-text">
+                파이프라인으로 생성된 .md 파일을 드롭하면<br>
+                이미지를 Base64로 인라인 임베드한 독립 MD 파일을 만듭니다.
+              </p>
+
+              <!-- output/ 파일 목록 선택 -->
+              <label class="form-label" style="margin-bottom:6px;">
+                output/ 폴더의 MD 파일 선택
+                <div style="display:flex;gap:6px;margin-top:4px;">
+                  <select id="embedFileSelect" class="form-input" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;">
+                    <option value="">-- 파일을 선택하세요 --</option>
+                  </select>
+                  <button class="btn btn--sm btn--outline" id="btnRefreshEmbedFileList" title="목록 새로고침" style="flex-shrink:0;">↺</button>
+                </div>
+              </label>
+
+              <!-- 또는 드래그앤드롭 -->
+              <p class="hint-text" style="margin:6px 0;text-align:center;color:var(--text-muted);">— 또는 파일 직접 드롭 —</p>
+              <div id="embedDropZone" class="drop-zone">
+                <div class="drop-zone__icon">📄</div>
+                <span id="embedDropLabel">MD 파일을 여기에 드래그하거나 클릭해서 선택</span>
+                <input type="file" id="embedFileInput" accept=".md" style="display:none" />
+              </div>
+
+              <div id="embedStatus" class="status status--idle" style="display:none;"></div>
+              <button class="btn btn--primary btn--full" id="btnRunEmbed" style="display:none;">
+                📎 Base64 이미지 임베드 실행
+              </button>
+              <div id="embedSavePath" class="hint-text" style="display:none;text-align:center;"></div>
+            </div>
+          </div>
+
+        </div><!-- /ltab-embed -->
+
+        <!-- ── 탭 3: MD(이미지링크)추출 ── -->
+        <div class="left-tab-content" id="ltab-extract">
+
+          <div class="card">
+            <div class="card__header">🖼️ Base64 이미지 → 파일 추출</div>
+            <div class="card__body">
+              <p class="hint-text">
+                <code>output/</code> 폴더의 MD 파일을 선택하면<br>
+                Base64 이미지를 <code>assets/</code>에 저장하고<br>
+                로컬 경로 연결된 <code>_extracted.md</code>를 생성합니다.
+              </p>
+
+              <!-- output/ 파일 목록 선택 -->
+              <label class="form-label" style="margin-bottom:6px;">
+                output/ 폴더의 MD 파일 선택
+                <div style="display:flex;gap:6px;margin-top:4px;">
+                  <select id="extractFileSelect" class="form-input" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;">
+                    <option value="">-- 파일을 선택하세요 --</option>
+                  </select>
+                  <button class="btn btn--sm btn--outline" id="btnRefreshFileList" title="목록 새로고침" style="flex-shrink:0;">↺</button>
+                </div>
+              </label>
+
+              <!-- 또는 드래그앤드롭 -->
+              <p class="hint-text" style="margin:6px 0;text-align:center;color:var(--text-muted);">— 또는 파일 직접 드롭 —</p>
+              <div id="extractDropZone" class="drop-zone">
+                <div class="drop-zone__icon">🖼️</div>
+                <span id="extractDropLabel">MD 파일을 여기에 드래그하거나 클릭해서 선택</span>
+                <input type="file" id="extractFileInput" accept=".md" style="display:none" />
+              </div>
+
+              <div id="extractStatus" class="status status--idle" style="display:none;"></div>
+
+              <button class="btn btn--primary btn--full" id="btnRunExtract" style="display:none;">
+                🖼️ Base64 이미지 추출 실행
+              </button>
+              <div id="extractSavePath" class="hint-text" style="display:none;text-align:center;"></div>
+            </div>
+          </div>
+
+        </div><!-- /ltab-extract -->
+
+        <!-- ── 탭 4: 글자추출MD로변환 ── -->
+        <div class="left-tab-content" id="ltab-text-extract">
+
+          <!-- STEP 1: 영역 선택 -->
+          <div class="card" id="teStep1">
+            <div class="card__header">
+              <span>① 영역 선택</span>
+            </div>
+            <div class="card__body">
+              <p class="hint-text">MD 파일을 선택하면 오른쪽에 이미지가 표시됩니다.<br>추출할 영역을 마우스로 지정하세요.</p>
+              <label class="form-label" style="margin-bottom:6px;">
+                output/ 폴더의 MD 파일 선택
+                <div style="display:flex;gap:6px;margin-top:4px;">
+                  <select id="textExtractFileSelect" class="form-input" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;">
+                    <option value="">-- 파일을 선택하세요 --</option>
+                  </select>
+                  <button class="btn btn--sm btn--outline" id="btnRefreshTextExtractFileList" title="목록 새로고침" style="flex-shrink:0;">↺</button>
+                </div>
+              </label>
+              <button class="btn btn--secondary btn--full" id="btnStartTextExtract" style="display:none; margin-top:10px;">🔲 영역 지정 시작</button>
+              <div id="textExtractControls" style="display:none; margin-top:15px; border-top:1px solid var(--border); padding-top:15px;">
+                <p style="font-weight:bold; margin-bottom:10px; color:var(--text);">이미지 네비게이션 (<span id="currentImageIdx">0</span>/<span id="totalImageCount">0</span>)</p>
+                <div style="display:flex; gap:10px; margin-bottom:15px;">
+                  <button class="btn btn--sm btn--outline" id="btnPrevImage" style="flex:1;">이전</button>
+                  <button class="btn btn--sm btn--outline" id="btnNextImage" style="flex:1;">다음</button>
+                </div>
+                <p style="font-weight:bold; margin-bottom:5px; color:var(--text);">선택 모드</p>
+                <div style="display:flex; gap:10px; margin-bottom:15px; color:var(--text);">
+                  <label><input type="radio" name="boxType" value="text" checked> 텍스트(OCR)</label>
+                  <label><input type="radio" name="boxType" value="figure"> 그림(Crop)</label>
+                </div>
+                <button class="btn btn--primary btn--full" id="btnGoStep2">다음 단계: OCR 미리보기 →</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- STEP 2: 컨트롤 (미리보기는 오른쪽 패널) -->
+          <div class="card" id="teStep2" style="display:none;">
+            <div class="card__header">
+              <span>② OCR 미리보기 및 선택</span>
+              <span id="ocrPreviewCount" style="font-size:12px; color:var(--text-muted);"></span>
+            </div>
+            <div style="padding:8px 10px; display:flex; gap:8px; border-bottom:1px solid var(--border);">
+              <button class="btn btn--outline btn--sm" id="btnBackStep1">← 다시 선택</button>
+              <button class="btn btn--primary btn--sm" id="btnRunTextExtract" style="margin-left:auto;">✨ 최종 변환</button>
+            </div>
+          </div>
+
+          <div id="textExtractStatus" class="status status--idle" style="display:none; margin-top:10px;"></div>
+          <div id="textExtractSavePath" class="hint-text" style="display:none;text-align:center;"></div>
+        </div><!-- /ltab-text-extract -->
+
+        <!-- ── 실시간 처리 로그 (항상 표시) ── -->
+        <div class="log-panel-wrap">
+          <div class="card" style="height:100%; display:flex; flex-direction:column; border-radius:0; border-left:none; border-right:none; border-bottom:none;">
+            <div class="card__header">
+              <span>📡 실시간 처리 로그</span>
+              <div class="header-actions">
+                <span id="wsStatus" class="ws-badge ws-badge--disconnected">● 연결 중...</span>
+                <button class="btn btn--sm btn--outline" id="btnClearLog">초기화</button>
+              </div>
+            </div>
+            <div class="card__body card__body--log">
+              <div class="progress-wrap" id="progressWrap" style="display:none;">
+                <div class="progress-bar">
+                  <div class="progress-fill" id="progressFill"></div>
+                </div>
+                <span class="progress-text" id="progressText">0 / 0</span>
+              </div>
+              <div class="log-output" id="logOutput">
+                <span class="log-info">WebSocket 연결 대기 중...</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- ── 우측 패널 (작업 영역) ── -->
+      <section class="panel panel--right">
+
+        <!-- 이미지 프리뷰 + 캔버스 (Step 1) -->
+        <div class="card" id="previewContainer" style="display:none; flex:1; flex-direction:column; margin:0; border-radius:0; border:none; border-left:1px solid var(--border);">
+          <div class="card__header">
+            <span>🔲 이미지 프리뷰</span>
+            <div style="display:flex; gap:6px;">
+              <button class="btn btn--sm btn--outline" id="btnZoomIn">확대(+)</button>
+              <button class="btn btn--sm btn--outline" id="btnZoomOut">축소(-)</button>
+              <button class="btn btn--sm btn--outline" id="btnZoomReset">1:1</button>
+              <button class="btn btn--sm btn--outline" id="btnClearBoxes" style="margin-left:10px;">박스 지우기</button>
+            </div>
+          </div>
+          <div class="card__body" style="padding:12px; overflow:auto; background:#333; text-align:center; flex:1;">
+            <div id="canvasWrapper" style="position:relative; display:inline-block; text-align:left; vertical-align:top;">
+              <img id="previewImage" src="" style="display:block; user-select:none; pointer-events:none;" />
+              <canvas id="overlayCanvas" style="position:absolute; top:0; left:0; cursor:crosshair;"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- OCR 미리보기 (Step 2) -->
+        <div id="ocrRightPanel" style="display:none; flex:1; overflow-y:auto; padding:14px;">
+          <div id="ocrPreviewList" style="display:flex; flex-direction:column; gap:14px;"></div>
+        </div>
+
+        <!-- 기본 안내 -->
+        <div id="workAreaPlaceholder" style="flex:1; display:flex; align-items:center; justify-content:center; color:var(--text-muted); font-size:0.9rem; text-align:center; padding:20px; line-height:2;">
+          ← 글자/이미지 추출 탭에서<br>MD 파일을 선택하면<br>작업 영역이 표시됩니다.
+        </div>
+
+      </section>
+
+    </main>
+  </div>
+
+  <script>
+    let clipboardHtml = "";
+    let ws            = null;
+
+    // ── DOM ──
+    const btnReadClipboard  = document.getElementById("btnReadClipboard");
+    const btnScrollStart    = document.getElementById("btnScrollStart");
+    const btnProcess        = document.getElementById("btnProcess");
+    const togHtml           = document.getElementById("togHtml");
+    const togMdExtract      = document.getElementById("togMdExtract");
+    const togMdEmbed        = document.getElementById("togMdEmbed");
+    const btnClearLog       = document.getElementById("btnClearLog");
+    const htmlSource        = document.getElementById("htmlSource");
+    const htmlRender        = document.getElementById("htmlRender");
+    const clipboardStatus   = document.getElementById("clipboardStatus");
+    const logOutput         = document.getElementById("logOutput");
+    const wsStatus          = document.getElementById("wsStatus");
+    const progressWrap      = document.getElementById("progressWrap");
+    const progressFill      = document.getElementById("progressFill");
+    const progressText      = document.getElementById("progressText");
+
+    const embedDropZone            = document.getElementById("embedDropZone");
+    const embedFileInput           = document.getElementById("embedFileInput");
+    const embedDropLabel           = document.getElementById("embedDropLabel");
+    const embedStatus              = document.getElementById("embedStatus");
+    const embedFileSelect          = document.getElementById("embedFileSelect");
+    const btnRefreshEmbedFileList  = document.getElementById("btnRefreshEmbedFileList");
+    const btnRunEmbed              = document.getElementById("btnRunEmbed");
+    const embedSavePath            = document.getElementById("embedSavePath");
+
+    const extractDropZone      = document.getElementById("extractDropZone");
+    const extractFileInput     = document.getElementById("extractFileInput");
+    const extractDropLabel     = document.getElementById("extractDropLabel");
+    const extractStatus        = document.getElementById("extractStatus");
+    const extractFileSelect    = document.getElementById("extractFileSelect");
+    const btnRefreshFileList   = document.getElementById("btnRefreshFileList");
+    const btnRunExtract        = document.getElementById("btnRunExtract");
+    const extractSavePath      = document.getElementById("extractSavePath");
+
+    // ────────────────────────────────────────
+    // 출력 토글 버튼
+    // ────────────────────────────────────────
+    function updateProcessBtn() {
+      const anyOn = togHtml.classList.contains("active") ||
+                    togMdExtract.classList.contains("active") ||
+                    togMdEmbed.classList.contains("active");
+      btnProcess.disabled = !anyOn || !clipboardHtml;
+    }
+
+    [togHtml, togMdExtract, togMdEmbed].forEach(btn => {
+      btn.addEventListener("click", () => {
+        btn.classList.toggle("active");
+        updateProcessBtn();
+      });
+    });
+
+    // ────────────────────────────────────────
+    // 좌측 탭 전환
+    // ────────────────────────────────────────
+    document.querySelectorAll(".left-tab").forEach(tab => {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll(".left-tab").forEach(t => t.classList.remove("active"));
+        document.querySelectorAll(".left-tab-content").forEach(c => c.classList.remove("active"));
+        tab.classList.add("active");
+        const targetId = `ltab-${tab.dataset.ltab}`;
+        document.getElementById(targetId).classList.add("active");
+        
+        if (tab.dataset.ltab === "text-extract") {
+          loadTextExtractFileList();
+        } else {
+          // 다른 탭으로 이동 시 오른쪽 패널 작업 영역 숨김
+          document.getElementById("previewContainer").style.display = "none";
+          document.getElementById("ocrRightPanel").style.display = "none";
+          document.getElementById("workAreaPlaceholder").style.display = "flex";
+        }
+        
+        if (tab.dataset.ltab === "embed")   loadEmbedFileList();
+        if (tab.dataset.ltab === "extract") loadExtractFileList();
+      });
+    });
+
+    // ────────────────────────────────────────
+    // 미리보기 탭 전환
+    // ────────────────────────────────────────
+    document.querySelectorAll(".tab").forEach(tab => {
+      tab.addEventListener("click", () => {
+        document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+        document.querySelectorAll(".tab-content").forEach(c => c.classList.remove("active"));
+        tab.classList.add("active");
+        document.getElementById(`tab-${tab.dataset.tab}`).classList.add("active");
+      });
+    });
+
+    // ────────────────────────────────────────
+    // WebSocket
+    // ────────────────────────────────────────
+    function connectWS() {
+      ws = new WebSocket(`ws://${location.host}/ws/logs`);
+      ws.onopen = () => {
+        wsStatus.textContent = "● 연결됨";
+        wsStatus.className   = "ws-badge ws-badge--connected";
+        appendLog("✅ WebSocket 연결 완료", "success");
+      };
+      ws.onclose = () => {
+        wsStatus.textContent = "● 연결 끊김";
+        wsStatus.className   = "ws-badge ws-badge--disconnected";
+        setTimeout(connectWS, 3000);
+      };
+      ws.onerror = () => {
+        wsStatus.textContent = "● 오류";
+        wsStatus.className   = "ws-badge ws-badge--error";
+      };
+      ws.onmessage = (event) => {
+        const msg = JSON.parse(event.data);
+        if      (msg.type === "log")         appendLog(msg.text, msg.level);
+        else if (msg.type === "progress")    showProgress(msg.current, msg.total);
+        else if (msg.type === "done")        onPipelineDone(msg.stats);
+        else if (msg.type === "scroll_done") onScrollDone();
+      };
+    }
+
+    function appendLog(text, level = "info") {
+      const line = document.createElement("div");
+      line.className   = `log-line log-${level}`;
+      line.textContent = text;
+      logOutput.appendChild(line);
+      logOutput.scrollTop = logOutput.scrollHeight;
+    }
+
+    btnClearLog.addEventListener("click", () => {
+      logOutput.innerHTML        = "";
+      progressWrap.style.display = "none";
+    });
+
+    function showProgress(current, total) {
+      progressWrap.style.display = "flex";
+      const pct = total > 0 ? Math.round((current / total) * 100) : 0;
+      progressFill.style.width = `${pct}%`;
+      progressText.textContent = `${current} / ${total}`;
+    }
+
+
+    // ────────────────────────────────────────
+    // Tab 2 자동 스크롤
+    // ────────────────────────────────────────
+    btnScrollStart.addEventListener("click", async () => {
+      btnScrollStart.disabled    = true;
+      btnScrollStart.textContent = "⏳ 스크롤 중...";
+      appendLog("🖱️ Tab 2 자동 스크롤 요청 전송", "info");
+      const res  = await fetch("/api/scroll/start", { method: "POST" });
+      const data = await res.json();
+      if (!data.ok) {
+        appendLog(`❌ ${data.message}`, "error");
+        btnScrollStart.disabled    = false;
+        btnScrollStart.textContent = "🖱️ Tab 2 자동 스크롤 시작";
+      }
+    });
+
+    function onScrollDone() {
+      // 스크롤 완료 후 버튼은 비활성화 상태로 유지
+      btnScrollStart.disabled    = true;
+      btnScrollStart.textContent = "✅ 스크롤 완료";
+    }
+
+    // ────────────────────────────────────────
+    // 클립보드 읽기
+    // ────────────────────────────────────────
+    async function readClipboard() {
+      if (navigator.clipboard && navigator.clipboard.read) {
+        try {
+          const items = await navigator.clipboard.read();
+          for (const item of items) {
+            if (item.types.includes("text/html")) {
+              const blob = await item.getType("text/html");
+              return { ok: true, html: await blob.text() };
+            }
+          }
+        } catch (e) { console.warn("clipboard.read() 실패:", e); }
+      }
+      if (navigator.clipboard && navigator.clipboard.readText) {
+        try {
+          const text = await navigator.clipboard.readText();
+          if (text.trim()) return { ok: true, html: text };
+        } catch (e) { console.warn("clipboard.readText() 실패:", e); }
+      }
+      return { ok: false, message: "클립보드에 데이터가 없거나 권한이 없습니다." };
+    }
+
+    btnReadClipboard.addEventListener("click", async () => {
+      clipboardStatus.className   = "status status--loading";
+      clipboardStatus.textContent = "⏳ 읽는 중...";
+      const data = await readClipboard();
+      if (data.ok) {
+        clipboardHtml = data.html;
+        htmlSource.value = data.html;
+        const doc = htmlRender.contentDocument || htmlRender.contentWindow.document;
+        doc.open(); doc.write(data.html); doc.close();
+        clipboardStatus.className   = "status status--success";
+        clipboardStatus.textContent = `✅ HTML 데이터 감지됨 (${data.html.length.toLocaleString()} bytes)`;
+        updateProcessBtn();
+      } else {
+        clipboardStatus.className   = "status status--error";
+        clipboardStatus.textContent = `❌ ${data.message}`;
+        clipboardHtml = "";
+        updateProcessBtn();
+      }
+    });
+
+    // ────────────────────────────────────────
+    // 파이프라인 실행
+    // ────────────────────────────────────────
+    btnProcess.addEventListener("click", async () => {
+      btnProcess.disabled        = true;
+      btnProcess.textContent     = "⏳ 처리 중...";
+      progressWrap.style.display = "none";
+      appendLog("=".repeat(46), "section");
+      appendLog("▶ 파이프라인 요청 전송", "info");
+      const res  = await fetch("/api/process", {
+        method : "POST",
+        headers: { "Content-Type": "application/json" },
+        body   : JSON.stringify({
+          html       : clipboardHtml,
+          base_url   : "",
+          save_html  : togHtml.classList.contains("active"),
+          save_md    : togMdExtract.classList.contains("active"),
+          embed_md   : togMdEmbed.classList.contains("active"),
+        }),
+      });
+      const data = await res.json();
+      if (!data.ok) {
+        appendLog(`❌ ${data.message}`, "error");
+        btnProcess.disabled    = false;
+        btnProcess.textContent = "▶ MD파일 만들기 실행";
+      }
+    });
+
+    function onPipelineDone(stats) {
+      appendLog("=".repeat(46), "section");
+      appendLog("✅ 처리 완료!", "success");
+      const skipped = stats.skipped ? ` | 건너뜀: ${stats.skipped}개` : "";
+      appendLog(`   전체: ${stats.total}개 | 성공: ${stats.success}개 | 실패: ${stats.failed}개${skipped}`, "info");
+      if (stats.run_id) appendLog(`   📁 ${stats.run_id}`, "info");
+      btnProcess.textContent = "▶ MD파일 만들기 실행";
+      updateProcessBtn();
+    }
+
+    // ────────────────────────────────────────
+    // MD Base64 임베드 — output/ 파일 목록
+    // ────────────────────────────────────────
+    async function loadEmbedFileList() {
+      try {
+        const res  = await fetch("/api/output_files");
+        const data = await res.json();
+        embedFileSelect.innerHTML = '<option value="">-- 파일을 선택하세요 --</option>';
+        data.files.forEach(f => {
+          const opt = document.createElement("option");
+          opt.value = opt.textContent = f;
+          embedFileSelect.appendChild(opt);
+        });
+      } catch(e) {
+        console.error("파일 목록 로드 실패:", e);
+      }
+    }
+    loadEmbedFileList();
+
+    btnRefreshEmbedFileList.addEventListener("click", loadEmbedFileList);
+
+    embedFileSelect.addEventListener("change", () => {
+      if (embedFileSelect.value) {
+        embedDropLabel.textContent = `📄 ${embedFileSelect.value}`;
+        btnRunEmbed.style.display  = "block";
+        showEmbedStatus("idle", "");
+        embedStatus.style.display  = "none";
+        embedSavePath.style.display = "none";
+      } else {
+        btnRunEmbed.style.display = "none";
+      }
+    });
+
+    btnRunEmbed.addEventListener("click", async () => {
+      const filename = embedFileSelect.value;
+      if (!filename) return;
+      showEmbedStatus("loading", `⏳ ${filename} 처리 중...`);
+      embedSavePath.style.display = "none";
+      btnRunEmbed.disabled = true;
+
+      let text;
+      try {
+        const r = await fetch(`/api/download?path=${encodeURIComponent(filename)}`);
+        text = await r.text();
+      } catch(e) {
+        showEmbedStatus("error", `❌ 파일 읽기 실패: ${e}`);
+        btnRunEmbed.disabled = false;
+        return;
+      }
+
+      let res, data;
+      try {
+        res  = await fetch("/api/embed_images", {
+          method : "POST",
+          headers: { "Content-Type": "application/json" },
+          body   : JSON.stringify({ md: text, filename }),
+        });
+        data = await res.json();
+      } catch(e) {
+        showEmbedStatus("error", `❌ 요청 실패: ${e}`);
+        btnRunEmbed.disabled = false;
+        return;
+      }
+      btnRunEmbed.disabled = false;
+
+      if (!data.ok) {
+        showEmbedStatus("error", `❌ ${data.message}`);
+        return;
+      }
+
+      showEmbedStatus("success", `✅ 완료 — 이미지 ${data.img_count}개 임베드 (${_fmtBytes(data.size)})`);
+      embedSavePath.textContent   = `📁 저장 위치: output/${data.filename}`;
+      embedSavePath.style.display = "block";
+    });
+
+    // ────────────────────────────────────────
+    // MD Base64 임베드 — 드래그앤드롭
+    // ────────────────────────────────────────
+    embedDropZone.addEventListener("click", () => embedFileInput.click());
+
+    embedDropZone.addEventListener("dragover", e => {
+      e.preventDefault();
+      embedDropZone.classList.add("drop-zone--over");
+    });
+    embedDropZone.addEventListener("dragleave", () => {
+      embedDropZone.classList.remove("drop-zone--over");
+    });
+    embedDropZone.addEventListener("drop", e => {
+      e.preventDefault();
+      embedDropZone.classList.remove("drop-zone--over");
+      const file = e.dataTransfer.files[0];
+      if (file) processEmbedFile(file);
+    });
+    embedFileInput.addEventListener("change", () => {
+      if (embedFileInput.files[0]) processEmbedFile(embedFileInput.files[0]);
+    });
+
+    async function processEmbedFile(file) {
+      if (!file.name.endsWith(".md")) {
+        showEmbedStatus("error", "❌ .md 파일만 지원합니다.");
+        return;
+      }
+      embedDropLabel.textContent  = `📄 ${file.name}`;
+      showEmbedStatus("loading", `⏳ ${file.name} 처리 중...`);
+      embedSavePath.style.display = "none";
+      btnRunEmbed.style.display   = "none";
+
+      const text = await file.text();
+      let res, data;
+      try {
+        res  = await fetch("/api/embed_images", {
+          method : "POST",
+          headers: { "Content-Type": "application/json" },
+          body   : JSON.stringify({ md: text, filename: file.name }),
+        });
+        data = await res.json();
+      } catch (e) {
+        showEmbedStatus("error", `❌ 요청 실패: ${e}`);
+        return;
+      }
+
+      if (!data.ok) {
+        showEmbedStatus("error", `❌ ${data.message}`);
+        return;
+      }
+
+      showEmbedStatus("success", `✅ 완료 — 이미지 ${data.img_count}개 임베드 (${_fmtBytes(data.size)})`);
+      embedSavePath.textContent   = `📁 저장 위치: output/${data.filename}`;
+      embedSavePath.style.display = "block";
+    }
+
+    function showEmbedStatus(type, msg) {
+      embedStatus.style.display = "";
+      embedStatus.className     = `status status--${type === "loading" ? "idle" : type}`;
+      embedStatus.textContent   = msg;
+    }
+
+    function _fmtBytes(n) {
+      if (n < 1024)        return n + " B";
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + " KB";
+      return (n / (1024 * 1024)).toFixed(1) + " MB";
+    }
+
+    // ────────────────────────────────────────
+    // Base64 이미지 → 파일 추출
+    // ────────────────────────────────────────
+
+    // output/ 파일 목록 로드
+    async function loadExtractFileList() {
+      try {
+        const res  = await fetch("/api/output_files");
+        const data = await res.json();
+        extractFileSelect.innerHTML = '<option value="">-- 파일을 선택하세요 --</option>';
+        data.files.forEach(f => {
+          const opt = document.createElement("option");
+          opt.value = opt.textContent = f;
+          extractFileSelect.appendChild(opt);
+        });
+      } catch(e) {
+        console.error("파일 목록 로드 실패:", e);
+      }
+    }
+    loadExtractFileList();
+
+    btnRefreshFileList.addEventListener("click", loadExtractFileList);
+
+    extractFileSelect.addEventListener("change", () => {
+      if (extractFileSelect.value) {
+        extractDropLabel.textContent = `📄 ${extractFileSelect.value}`;
+        btnRunExtract.style.display  = "block";
+        showExtractStatus("idle", "");
+        extractStatus.style.display  = "none";
+        extractSavePath.style.display = "none";
+      } else {
+        btnRunExtract.style.display = "none";
+      }
+    });
+
+    // 서버 경로 기반 처리 (output/ 파일 선택 시)
+    btnRunExtract.addEventListener("click", async () => {
+      const filename = extractFileSelect.value;
+      if (!filename) return;
+      showExtractStatus("loading", `⏳ ${filename} 처리 중...`);
+      extractSavePath.style.display = "none";
+      btnRunExtract.disabled = true;
+
+      let res, data;
+      try {
+        res  = await fetch("/api/extract_images_by_path", {
+          method : "POST",
+          headers: { "Content-Type": "application/json" },
+          body   : JSON.stringify({ filename }),
+        });
+        data = await res.json();
+      } catch(e) {
+        showExtractStatus("error", `❌ 요청 실패: ${e}`);
+        btnRunExtract.disabled = false;
+        return;
+      }
+      btnRunExtract.disabled = false;
+
+      if (!data.ok) {
+        showExtractStatus("error", `❌ ${data.message}`);
+        return;
+      }
+
+      extractSavePath.textContent   = `📁 저장 위치: output/${data.filename}`;
+      extractSavePath.style.display = "block";
+      showExtractStatus("success", `✅ 완료 — 이미지 ${data.img_count}개 추출 (${_fmtBytes(data.size)})`);
+    });
+
+    // 드롭존 (파일 직접 업로드)
+    extractDropZone.addEventListener("click", () => extractFileInput.click());
+
+    extractDropZone.addEventListener("dragover", e => {
+      e.preventDefault();
+      extractDropZone.classList.add("drop-zone--over");
+    });
+    extractDropZone.addEventListener("dragleave", () => {
+      extractDropZone.classList.remove("drop-zone--over");
+    });
+    extractDropZone.addEventListener("drop", e => {
+      e.preventDefault();
+      extractDropZone.classList.remove("drop-zone--over");
+      const file = e.dataTransfer.files[0];
+      if (file) processExtractFile(file);
+    });
+    extractFileInput.addEventListener("change", () => {
+      if (extractFileInput.files[0]) processExtractFile(extractFileInput.files[0]);
+    });
+
+    async function processExtractFile(file) {
+      if (!file.name.endsWith(".md")) {
+        showExtractStatus("error", "❌ .md 파일만 지원합니다.");
+        return;
+      }
+      extractDropLabel.textContent  = `📄 ${file.name}`;
+      showExtractStatus("loading", `⏳ ${file.name} 처리 중...`);
+      extractSavePath.style.display = "none";
+
+      const text = await file.text();
+      let res, data;
+      try {
+        res  = await fetch("/api/extract_images", {
+          method : "POST",
+          headers: { "Content-Type": "application/json" },
+          body   : JSON.stringify({ md: text, filename: file.name }),
+        });
+        data = await res.json();
+      } catch (e) {
+        showExtractStatus("error", `❌ 요청 실패: ${e}`);
+        return;
+      }
+
+      if (!data.ok) {
+        showExtractStatus("error", `❌ ${data.message}`);
+        return;
+      }
+
+      extractSavePath.textContent   = `📁 저장 위치: output/${data.filename}`;
+      extractSavePath.style.display = "block";
+      showExtractStatus("success", `✅ 완료 — 이미지 ${data.img_count}개 추출 (${_fmtBytes(data.size)})`);
+    }
+
+    function showExtractStatus(type, msg) {
+      extractStatus.style.display = "";
+      extractStatus.className     = `status status--${type === "loading" ? "idle" : type}`;
+      extractStatus.textContent   = msg;
+    }
+
+    // ────────────────────────────────────────
+    // 글자추출MD로변환 로직
+    // ────────────────────────────────────────
+    const textExtractFileSelect = document.getElementById("textExtractFileSelect");
+    const btnRefreshTextExtractFileList = document.getElementById("btnRefreshTextExtractFileList");
+    const btnStartTextExtract = document.getElementById("btnStartTextExtract");
+    const textExtractControls = document.getElementById("textExtractControls");
+    const textExtractStatus = document.getElementById("textExtractStatus");
+    const textExtractSavePath = document.getElementById("textExtractSavePath");
+    
+    const previewImage = document.getElementById("previewImage");
+    const overlayCanvas = document.getElementById("overlayCanvas");
+    const ctx = overlayCanvas.getContext("2d");
+    const canvasWrapper = document.getElementById("canvasWrapper");
+    
+    let currentMdImages = [];
+    let currentImageIndex = 0;
+    // boxes: { [imagePath]: [{x, y, w, h, type}] }
+    let boxes = {};
+    
+    // Canvas drawing state
+    let isDrawing = false;
+    let startX = 0, startY = 0;
+    let currentBox = null;
+    let scaleRatio = 1;
+    let zoomLevel = 1.0;
+
+    // ────────────────────────────────────────
+    // 줌 컨트롤
+    // ────────────────────────────────────────
+    document.getElementById("btnZoomIn").addEventListener("click", () => { zoomLevel += 0.2; updateZoom(); });
+    document.getElementById("btnZoomOut").addEventListener("click", () => { zoomLevel = Math.max(0.2, zoomLevel - 0.2); updateZoom(); });
+    document.getElementById("btnZoomReset").addEventListener("click", () => { zoomLevel = 1.0; updateZoom(); });
+
+    function updateZoom() {
+      if(!previewImage.src || !previewImage.complete) return;
+      previewImage.style.width = (previewImage.naturalWidth * zoomLevel) + 'px';
+      
+      // canvas wrapper 사이즈 재조정
+      overlayCanvas.width = previewImage.clientWidth;
+      overlayCanvas.height = previewImage.clientHeight;
+      scaleRatio = previewImage.naturalWidth / previewImage.clientWidth;
+      
+      drawAllBoxes();
+    }
+
+    async function loadTextExtractFileList() {
+      try {
+        const res = await fetch("/api/output_files");
+        const data = await res.json();
+        textExtractFileSelect.innerHTML = '<option value="">-- 파일을 선택하세요 --</option>';
+        data.files.forEach(f => {
+          const opt = document.createElement("option");
+          opt.value = opt.textContent = f;
+          textExtractFileSelect.appendChild(opt);
+        });
+      } catch(e) {
+        console.error("파일 목록 로드 실패:", e);
+      }
+    }
+
+    btnRefreshTextExtractFileList.addEventListener("click", loadTextExtractFileList);
+
+    textExtractFileSelect.addEventListener("change", () => {
+      if (textExtractFileSelect.value) {
+        btnStartTextExtract.style.display = "block";
+        textExtractControls.style.display = "none";
+        textExtractStatus.style.display = "none";
+        previewImage.src = "";
+        previewImage.style.width = "";
+        ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+      } else {
+        btnStartTextExtract.style.display = "none";
+        textExtractControls.style.display = "none";
+      }
+    });
+
+    btnStartTextExtract.addEventListener("click", async () => {
+      const filename = textExtractFileSelect.value;
+      if (!filename) return;
+      
+      btnStartTextExtract.disabled = true;
+      btnStartTextExtract.textContent = "⏳ 로딩 중...";
+      
+      try {
+        const res = await fetch(`/api/md_images?filename=${encodeURIComponent(filename)}`);
+        const data = await res.json();
+        if(data.ok && data.images.length > 0) {
+          currentMdImages = data.images;
+          currentImageIndex = 0;
+          boxes = {};
+          
+          btnStartTextExtract.style.display = "none";
+          textExtractControls.style.display = "block";
+          document.getElementById("workAreaPlaceholder").style.display = "none";
+          document.getElementById("ocrRightPanel").style.display = "none";
+          document.getElementById("previewContainer").style.display = "flex";
+          document.getElementById("totalImageCount").textContent = currentMdImages.length;
+          loadImageForExtract();
+        } else {
+          alert("마크다운 파일에서 이미지를 찾을 수 없습니다.");
+        }
+      } catch(e) {
+        alert(`이미지 목록 로드 실패: ${e}`);
+      }
+      btnStartTextExtract.disabled = false;
+      btnStartTextExtract.textContent = "🔲 영역 지정 시작";
+    });
+
+    function loadImageForExtract() {
+      if (currentMdImages.length === 0) return;
+      document.getElementById("currentImageIdx").textContent = currentImageIndex + 1;
+      
+      const imgPath = currentMdImages[currentImageIndex];
+      
+      previewImage.onload = () => {
+        const cardBody = document.querySelector("#previewContainer .card__body");
+        const containerWidth = cardBody ? cardBody.clientWidth : 600;
+        if (previewImage.naturalWidth > containerWidth - 40) {
+          zoomLevel = (containerWidth - 40) / previewImage.naturalWidth;
+        } else {
+          zoomLevel = 1.0;
+        }
+        updateZoom();
+      };
+      
+      // cache 우회를 위해 타임스탬프 추가
+      previewImage.src = `/api/image_raw?path=${encodeURIComponent(imgPath)}&_t=${Date.now()}`;
+    }
+
+    document.getElementById("btnPrevImage").addEventListener("click", () => {
+      if (currentImageIndex > 0) {
+        currentImageIndex--;
+        loadImageForExtract();
+      }
+    });
+
+    document.getElementById("btnNextImage").addEventListener("click", () => {
+      if (currentImageIndex < currentMdImages.length - 1) {
+        currentImageIndex++;
+        loadImageForExtract();
+      }
+    });
+
+    document.getElementById("btnClearBoxes").addEventListener("click", () => {
+      if(currentMdImages.length === 0) return;
+      const imgPath = currentMdImages[currentImageIndex];
+      boxes[imgPath] = [];
+      drawAllBoxes();
+    });
+
+    // ────────────────────────────────────────
+    // Canvas Mouse Events
+    // ────────────────────────────────────────
+    overlayCanvas.addEventListener("mousedown", (e) => {
+      const x = e.offsetX;
+      const y = e.offsetY;
+      
+      const imgPath = currentMdImages[currentImageIndex];
+      const currentBoxes = boxes[imgPath] || [];
+      
+      // 클릭한 위치에 박스가 있는지 확인 (역순 검색 - 최상단 박스)
+      for (let i = currentBoxes.length - 1; i >= 0; i--) {
+        const box = currentBoxes[i];
+        const bx = box.x / scaleRatio;
+        const by = box.y / scaleRatio;
+        const bw = box.w / scaleRatio;
+        const bh = box.h / scaleRatio;
+        
+        if (x >= bx && x <= bx + bw && y >= by && y <= by + bh) {
+          // 박스 안쪽을 클릭했으면 해당 박스를 삭제하고 그리기 중단
+          currentBoxes.splice(i, 1);
+          drawAllBoxes();
+          return;
+        }
+      }
+      
+      isDrawing = true;
+      startX = x;
+      startY = y;
+      currentBox = { x: startX, y: startY, w: 0, h: 0 };
+    });
+
+    overlayCanvas.addEventListener("mousemove", (e) => {
+      if (!isDrawing) return;
+      currentBox.w = e.offsetX - startX;
+      currentBox.h = e.offsetY - startY;
+      
+      drawAllBoxes();
+      
+      // Draw current box
+      const type = document.querySelector('input[name="boxType"]:checked').value;
+      ctx.strokeStyle = type === "text" ? "#4f8ef7" : "#3ecf8e";
+      ctx.lineWidth = 2;
+      ctx.setLineDash([5, 5]);
+      ctx.strokeRect(currentBox.x, currentBox.y, currentBox.w, currentBox.h);
+      ctx.setLineDash([]);
+    });
+
+    overlayCanvas.addEventListener("mouseup", (e) => {
+      if (!isDrawing) return;
+      isDrawing = false;
+      
+      // 0 크기 무시
+      if (Math.abs(currentBox.w) > 5 && Math.abs(currentBox.h) > 5) {
+        // 정규화 (음수 너비/높이 처리)
+        let bx = currentBox.w < 0 ? currentBox.x + currentBox.w : currentBox.x;
+        let by = currentBox.h < 0 ? currentBox.y + currentBox.h : currentBox.y;
+        let bw = Math.abs(currentBox.w);
+        let bh = Math.abs(currentBox.h);
+        
+        const type = document.querySelector('input[name="boxType"]:checked').value;
+        const imgPath = currentMdImages[currentImageIndex];
+        
+        if (!boxes[imgPath]) boxes[imgPath] = [];
+        
+        // 원본 이미지 해상도 기준으로 좌표 저장
+        boxes[imgPath].push({
+          x: Math.round(bx * scaleRatio),
+          y: Math.round(by * scaleRatio),
+          w: Math.round(bw * scaleRatio),
+          h: Math.round(bh * scaleRatio),
+          type: type
+        });
+      }
+      currentBox = null;
+      drawAllBoxes();
+    });
+
+    function drawAllBoxes() {
+      ctx.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
+      const imgPath = currentMdImages[currentImageIndex];
+      const currentBoxes = boxes[imgPath] || [];
+      
+      currentBoxes.forEach(box => {
+        // 표시 크기로 변환
+        const bx = box.x / scaleRatio;
+        const by = box.y / scaleRatio;
+        const bw = box.w / scaleRatio;
+        const bh = box.h / scaleRatio;
+        
+        ctx.strokeStyle = box.type === "text" ? "#4f8ef7" : "#3ecf8e";
+        ctx.lineWidth = 2;
+        ctx.fillStyle = box.type === "text" ? "rgba(79,142,247,0.15)" : "rgba(62,207,142,0.15)";
+        ctx.fillRect(bx, by, bw, bh);
+        ctx.strokeRect(bx, by, bw, bh);
+        
+        ctx.fillStyle = box.type === "text" ? "#fff" : "#fff";
+        ctx.font = "bold 12px sans-serif";
+        const label = box.type === "text" ? "Text" : "Figure";
+        
+        // 라벨 배경 그리기
+        const textWidth = ctx.measureText(label).width;
+        ctx.fillStyle = box.type === "text" ? "#4f8ef7" : "#3ecf8e";
+        ctx.fillRect(bx, by - 18 < 0 ? 0 : by - 18, textWidth + 8, 18);
+        
+        ctx.fillStyle = "#fff";
+        ctx.fillText(label, bx + 4, (by - 18 < 0 ? 0 : by - 18) + 13);
+      });
+    }
+
+    // ────────────────────────────────────────
+    // Step 2: OCR 미리보기
+    // ────────────────────────────────────────
+    let previewRegions = [];  // 서버에서 받은 regions, final_type 포함
+
+    document.getElementById("btnGoStep2").addEventListener("click", async () => {
+      const filename = textExtractFileSelect.value;
+      if (!filename) return;
+
+      const totalBoxes = Object.values(boxes).reduce((s, a) => s + a.length, 0);
+      if (totalBoxes === 0) { alert("선택된 영역이 없습니다."); return; }
+
+      const btn = document.getElementById("btnGoStep2");
+      btn.disabled = true;
+      btn.textContent = "⏳ OCR 처리 중...";
+
+      try {
+        const res = await fetch("/api/preview_extract", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename, boxes })
+        });
+        const data = await res.json();
+        if (!data.ok) { alert("미리보기 실패: " + data.message); return; }
+
+        previewRegions = data.regions.map(r => ({ ...r, final_type: r.orig_type }));
+        renderOcrPreview();
+
+        document.getElementById("teStep1").style.display = "none";
+        document.getElementById("previewContainer").style.display = "none";
+        document.getElementById("teStep2").style.display = "block";
+        document.getElementById("ocrRightPanel").style.display = "block";
+      } catch(e) {
+        alert("오류: " + e);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "다음 단계: OCR 미리보기 →";
+      }
+    });
+
+    document.getElementById("btnBackStep1").addEventListener("click", () => {
+      document.getElementById("teStep2").style.display = "none";
+      document.getElementById("teStep1").style.display = "";
+      document.getElementById("ocrRightPanel").style.display = "none";
+      document.getElementById("previewContainer").style.display = "flex";
+    });
+
+    function renderOcrPreview() {
+      const list = document.getElementById("ocrPreviewList");
+      list.innerHTML = "";
+      document.getElementById("ocrPreviewCount").textContent = `총 ${previewRegions.length}개 영역`;
+
+      previewRegions.forEach((region, i) => {
+        const isFigure = region.final_type === "figure";
+        const card = document.createElement("div");
+        card.style.cssText = "border:1px solid #ddd; border-radius:8px; padding:10px; background:#fafafa; display:flex; gap:10px; align-items:flex-start;";
+
+        // 왼쪽: 크롭 이미지 (flex 3)
+        const imgWrap = document.createElement("div");
+        imgWrap.style.cssText = "flex:3; min-width:0;";
+        const img = document.createElement("img");
+        img.src = `data:image/png;base64,${region.cropped_b64}`;
+        img.style.cssText = "width:auto; max-width:100%; height:auto; border-radius:4px; display:block;";
+        imgWrap.appendChild(img);
+        card.appendChild(imgWrap);
+
+        // 오른쪽: 텍스트 편집 + 버튼 (flex 1)
+        const rightCol = document.createElement("div");
+        rightCol.style.cssText = "flex:1; min-width:0; display:flex; flex-direction:column; gap:6px;";
+
+        // OCR 텍스트 편집 (text 타입만)
+        if (region.orig_type === "text") {
+          const ta = document.createElement("textarea");
+          ta.value = region.ocr_text;
+          ta.placeholder = "OCR 결과 없음 — 직접 입력 가능";
+          ta.style.cssText = "width:100%; box-sizing:border-box; background:#f0f4ff; border:1px solid #c5d5f5; border-radius:4px; padding:6px 8px; font-size:14px; line-height:1.5; resize:vertical; min-height:42px; color:#333; font-family:inherit;";
+          const _setTaHeight = (el) => {
+            const lines = (el.value || "").split("\n").length || 1;
+            el.style.height = (lines * 14 * 1.5 + 14) + "px";
+          };
+          _setTaHeight(ta);
+          ta.addEventListener("input", () => {
+            previewRegions[i].ocr_text = ta.value;
+            _setTaHeight(ta);
+            card.querySelector(".btn-txt").disabled = !ta.value.trim();
+          });
+          rightCol.appendChild(ta);
+        }
+
+        // 토글 버튼 + 재OCR 버튼
+        const btnRow = document.createElement("div");
+        btnRow.style.cssText = "display:flex; flex-wrap:wrap; gap:6px; align-items:center;";
+
+        const btnFig = document.createElement("button");
+        btnFig.textContent = "📷 그림";
+        btnFig.className = "btn btn--sm " + (isFigure ? "btn--primary" : "btn--outline");
+        btnFig.onclick = () => { previewRegions[i].final_type = "figure"; renderOcrPreview(); };
+
+        const btnTxt = document.createElement("button");
+        btnTxt.textContent = "✏️ 글자";
+        btnTxt.className = "btn btn--sm btn-txt " + (!isFigure ? "btn--primary" : "btn--outline");
+        btnTxt.disabled = region.orig_type !== "text";
+        btnTxt.title = region.orig_type !== "text" ? "그림 영역은 글자 변환 불가" : "";
+        btnTxt.onclick = () => { previewRegions[i].final_type = "text"; renderOcrPreview(); };
+
+        const btnReOcr = document.createElement("button");
+        btnReOcr.textContent = "↻";
+        btnReOcr.title = "OCR 재실행";
+        btnReOcr.className = "btn btn--sm btn--outline";
+        btnReOcr.style.cssText = "margin-left:auto; font-size:15px; padding:2px 8px;";
+        btnReOcr.disabled = region.orig_type !== "text";
+        btnReOcr.onclick = async () => {
+          btnReOcr.disabled = true;
+          btnReOcr.textContent = "⏳";
+          try {
+            const res = await fetch("/api/ocr_region", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ img_path: region.img_path, box: region.box })
+            });
+            const data = await res.json();
+            if (data.ok) {
+              previewRegions[i].ocr_text = data.ocr_text;
+              // textarea 업데이트
+              const ta = card.querySelector("textarea");
+              if (ta) {
+                ta.value = data.ocr_text;
+                const lc = (data.ocr_text || "").split("\n").length || 1;
+                ta.style.height = (lc * 14 * 1.5 + 14) + "px";
+              }
+            } else {
+              alert("재OCR 실패: " + data.message);
+            }
+          } catch(e) {
+            alert("오류: " + e);
+          } finally {
+            btnReOcr.disabled = false;
+            btnReOcr.textContent = "↻";
+          }
+        };
+
+        btnRow.appendChild(btnFig);
+        btnRow.appendChild(btnTxt);
+        btnRow.appendChild(btnReOcr);
+        rightCol.appendChild(btnRow);
+        card.appendChild(rightCol);
+        list.appendChild(card);
+      });
+    }
+
+    // ────────────────────────────────────────
+    // Step 3: 최종 변환
+    // ────────────────────────────────────────
+    document.getElementById("btnRunTextExtract").addEventListener("click", async () => {
+      const filename = textExtractFileSelect.value;
+      if (!filename) return;
+
+      appendLog("=".repeat(46), "section");
+      appendLog(`▶ 최종 변환 시작: ${filename}`, "info");
+
+      try {
+        const res = await fetch("/api/extract_text_manual", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename, regions: previewRegions })
+        });
+        const data = await res.json();
+        if (!data.ok) {
+          appendLog(`❌ 작업 요청 실패: ${data.message}`, "error");
+        } else {
+          appendLog(`[서버에 작업이 예약되었습니다. 곧 로그가 출력됩니다.]`, "info");
+          const savePath = document.getElementById("textExtractSavePath");
+          savePath.textContent = `저장 위치: ${data.output_path}`;
+          savePath.style.display = "block";
+        }
+      } catch (e) {
+        appendLog(`❌ 네트워크 오류: ${e}`, "error");
+      }
+    });
+
+    // ────────────────────────────────────────
+    // 초기화
+    // ────────────────────────────────────────
+    connectWS();
+  </script>
+
+</body>
+</html>

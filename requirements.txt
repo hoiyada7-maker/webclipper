@@ -1,0 +1,11 @@
+fastapi
+uvicorn[standard]
+jinja2
+python-multipart
+websockets
+beautifulsoup4
+requests
+Pillow
+markdownify
+playwright
+PyQt6
