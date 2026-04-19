@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import subprocess
 import sys
 import threading
 import time
@@ -38,6 +39,7 @@ TEMPLATES  = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 # 전역 변수
 _qt_app = None
 _browser_context = None
+_hybrid_proc: subprocess.Popen | None = None  # opendataloader-pdf-hybrid 프로세스
 _playwright = None
 _gui_page = None    # Tab 1: Scraper GUI
 _user_page = None   # Tab 2: User browsing / login
@@ -145,6 +147,41 @@ async def _cleanup_playwright() -> None:
         await _playwright.stop()
 
 
+def _start_hybrid_server() -> None:
+    """opendataloader-pdf-hybrid 서버를 백그라운드 프로세스로 시작합니다."""
+    global _hybrid_proc
+    try:
+        _hybrid_proc = subprocess.Popen(
+            [
+                sys.executable, "-m", "opendataloader_pdf_hybrid",
+                "--port", "5002",
+                "--force-ocr",
+                "--ocr-lang", "ko,en",
+            ],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print(f"[Hybrid] OCR 서버 시작 (PID {_hybrid_proc.pid}, port 5002)")
+    except FileNotFoundError:
+        # opendataloader-pdf[hybrid] 미설치 시 무시
+        print("[Hybrid] opendataloader-pdf-hybrid 미설치 — OCR 서버 생략")
+    except Exception as e:
+        print(f"[Hybrid] OCR 서버 시작 실패: {e}")
+
+
+def _stop_hybrid_server() -> None:
+    """hybrid 서버 프로세스를 종료합니다."""
+    global _hybrid_proc
+    if _hybrid_proc and _hybrid_proc.poll() is None:
+        _hybrid_proc.terminate()
+        try:
+            _hybrid_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            _hybrid_proc.kill()
+        print("[Hybrid] OCR 서버 종료")
+    _hybrid_proc = None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """서버 시작/종료 시 리소스 관리"""
@@ -158,6 +195,9 @@ async def lifespan(app: FastAPI):
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     ASSETS_DIR.mkdir(parents=True, exist_ok=True)
     (BASE_DIR / "static").mkdir(parents=True, exist_ok=True)
+
+    # OCR hybrid 서버 시작
+    await asyncio.get_running_loop().run_in_executor(None, _start_hybrid_server)
 
     try:
         await run_playwright(_init_playwright())
@@ -175,6 +215,8 @@ async def lifespan(app: FastAPI):
         await run_playwright(_cleanup_playwright())
     except Exception:  # noqa
         pass
+
+    _stop_hybrid_server()
 
 app = FastAPI(title="Web Clipper", lifespan=lifespan)
 
