@@ -1049,10 +1049,14 @@ async def preview_extract(request: Request):
         image_rgb = image[..., ::-1]
 
         for box in sorted(boxes, key=lambda b: b["y"]):
-            x1 = max(0, box["x"])
-            y1 = max(0, box["y"])
-            x2 = min(image_rgb.shape[1], box["x"] + box["w"])
-            y2 = min(image_rgb.shape[0], box["y"] + box["h"])
+            if box.get("full"):
+                x1, y1 = 0, 0
+                x2, y2 = image_rgb.shape[1], image_rgb.shape[0]
+            else:
+                x1 = max(0, box["x"])
+                y1 = max(0, box["y"])
+                x2 = min(image_rgb.shape[1], box["x"] + box["w"])
+                y2 = min(image_rgb.shape[0], box["y"] + box["h"])
             cropped = image_rgb[y1:y2, x1:x2]
 
             pil_img = Image.fromarray(cropped)
