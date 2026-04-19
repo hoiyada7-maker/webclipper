@@ -87,19 +87,6 @@
                 이미지를 Base64로 인라인 임베드한 독립 MD 파일을 만듭니다.
               </p>
 
-              <!-- output/ 파일 목록 선택 -->
-              <label class="form-label" style="margin-bottom:6px;">
-                output/ 폴더의 MD 파일 선택
-                <div style="display:flex;gap:6px;margin-top:4px;">
-                  <select id="embedFileSelect" class="form-input" multiple size="4" style="flex:1;min-width:0;">
-                    <option value="">-- 파일을 선택하세요 --</option>
-                  </select>
-                  <button class="btn btn--sm btn--outline" id="btnRefreshEmbedFileList" title="목록 새로고침" style="flex-shrink:0;">↺</button>
-                </div>
-              </label>
-
-              <!-- 또는 드래그앤드롭 -->
-              <p class="hint-text" style="margin:6px 0;text-align:center;color:var(--text-muted);">— 또는 파일 직접 드롭 —</p>
               <div id="embedDropZone" class="drop-zone">
                 <div class="drop-zone__icon">📄</div>
                 <span id="embedDropLabel">MD 파일을 여기에 드래그하거나 클릭해서 선택</span>
@@ -128,19 +115,6 @@
                 로컬 경로 연결된 <code>_extracted.md</code>를 생성합니다.
               </p>
 
-              <!-- output/ 파일 목록 선택 -->
-              <label class="form-label" style="margin-bottom:6px;">
-                output/ 폴더의 MD 파일 선택
-                <div style="display:flex;gap:6px;margin-top:4px;">
-                  <select id="extractFileSelect" class="form-input" multiple size="4" style="flex:1;min-width:0;">
-                    <option value="">-- 파일을 선택하세요 --</option>
-                  </select>
-                  <button class="btn btn--sm btn--outline" id="btnRefreshFileList" title="목록 새로고침" style="flex-shrink:0;">↺</button>
-                </div>
-              </label>
-
-              <!-- 또는 드래그앤드롭 -->
-              <p class="hint-text" style="margin:6px 0;text-align:center;color:var(--text-muted);">— 또는 파일 직접 드롭 —</p>
               <div id="extractDropZone" class="drop-zone">
                 <div class="drop-zone__icon">🖼️</div>
                 <span id="extractDropLabel">MD 파일을 여기에 드래그하거나 클릭해서 선택</span>
@@ -297,23 +271,17 @@
     const progressFill      = document.getElementById("progressFill");
     const progressText      = document.getElementById("progressText");
 
-    const embedDropZone            = document.getElementById("embedDropZone");
-    const embedFileInput           = document.getElementById("embedFileInput");
-    const embedDropLabel           = document.getElementById("embedDropLabel");
-    const embedStatus              = document.getElementById("embedStatus");
-    const embedFileSelect          = document.getElementById("embedFileSelect");
-    const btnRefreshEmbedFileList  = document.getElementById("btnRefreshEmbedFileList");
-    const btnRunEmbed              = document.getElementById("btnRunEmbed");
-    const embedSavePath            = document.getElementById("embedSavePath");
+    const embedDropZone   = document.getElementById("embedDropZone");
+    const embedFileInput  = document.getElementById("embedFileInput");
+    const embedDropLabel  = document.getElementById("embedDropLabel");
+    const embedStatus     = document.getElementById("embedStatus");
+    const embedSavePath   = document.getElementById("embedSavePath");
 
-    const extractDropZone      = document.getElementById("extractDropZone");
-    const extractFileInput     = document.getElementById("extractFileInput");
-    const extractDropLabel     = document.getElementById("extractDropLabel");
-    const extractStatus        = document.getElementById("extractStatus");
-    const extractFileSelect    = document.getElementById("extractFileSelect");
-    const btnRefreshFileList   = document.getElementById("btnRefreshFileList");
-    const btnRunExtract        = document.getElementById("btnRunExtract");
-    const extractSavePath      = document.getElementById("extractSavePath");
+    const extractDropZone  = document.getElementById("extractDropZone");
+    const extractFileInput = document.getElementById("extractFileInput");
+    const extractDropLabel = document.getElementById("extractDropLabel");
+    const extractStatus    = document.getElementById("extractStatus");
+    const extractSavePath  = document.getElementById("extractSavePath");
 
     // ────────────────────────────────────────
     // 출력 토글 버튼
@@ -352,8 +320,6 @@
           document.getElementById("workAreaPlaceholder").style.display = "flex";
         }
         
-        if (tab.dataset.ltab === "embed")   loadEmbedFileList();
-        if (tab.dataset.ltab === "extract") loadExtractFileList();
       });
     });
 
@@ -523,78 +489,6 @@
     }
 
     // ────────────────────────────────────────
-    // MD Base64 임베드 — output/ 파일 목록
-    // ────────────────────────────────────────
-    async function loadEmbedFileList() {
-      try {
-        const res  = await fetch("/api/output_files");
-        const data = await res.json();
-        embedFileSelect.innerHTML = '<option value="">-- 파일을 선택하세요 --</option>';
-        data.files.forEach(f => {
-          const opt = document.createElement("option");
-          opt.value = opt.textContent = f;
-          embedFileSelect.appendChild(opt);
-        });
-      } catch(e) {
-        console.error("파일 목록 로드 실패:", e);
-      }
-    }
-    loadEmbedFileList();
-
-    btnRefreshEmbedFileList.addEventListener("click", loadEmbedFileList);
-
-    embedFileSelect.addEventListener("change", () => {
-      const selected = Array.from(embedFileSelect.selectedOptions);
-      if (selected.length > 0) {
-        embedDropLabel.textContent = selected.length === 1 ? `📄 ${selected[0].value}` : `📄 ${selected.length}개 파일 선택됨`;
-        btnRunEmbed.style.display  = "block";
-        embedStatus.style.display  = "none";
-        embedSavePath.style.display = "none";
-      } else {
-        btnRunEmbed.style.display = "none";
-      }
-    });
-
-    btnRunEmbed.addEventListener("click", async () => {
-      const selected = Array.from(embedFileSelect.selectedOptions).map(o => o.value);
-      if (selected.length === 0) return;
-      showEmbedStatus("loading", `⏳ ${selected.length}개 파일 처리 중...`);
-      embedSavePath.style.display = "none";
-      btnRunEmbed.disabled = true;
-
-      const results = [];
-      for (const filename of selected) {
-        let text;
-        try {
-          const r = await fetch(`/api/download?path=${encodeURIComponent(filename)}`);
-          text = await r.text();
-        } catch(e) { results.push(`❌ ${filename}: 파일 읽기 실패`); continue; }
-
-        let res, data;
-        try {
-          res  = await fetch("/api/embed_images", {
-            method : "POST",
-            headers: { "Content-Type": "application/json" },
-            body   : JSON.stringify({ md: text, filename }),
-          });
-          data = await res.json();
-        } catch(e) { results.push(`❌ ${filename}: 요청 실패`); continue; }
-
-        if (!data.ok) results.push(`❌ ${filename}: ${data.message}`);
-        else          results.push(`✅ output/${data.filename} (이미지 ${data.img_count}개, ${_fmtBytes(data.size)})`);
-      }
-
-      btnRunEmbed.disabled = false;
-      const errCount = results.filter(r => r.startsWith("❌")).length;
-      showEmbedStatus(
-        errCount === 0 ? "success" : (errCount === results.length ? "error" : "warning"),
-        errCount === 0 ? `✅ ${results.length}개 모두 완료` : `${results.length - errCount}/${results.length} 완료`
-      );
-      embedSavePath.innerHTML     = results.map(r => `<div>${r}</div>`).join("");
-      embedSavePath.style.display = "block";
-    });
-
-    // ────────────────────────────────────────
     // MD Base64 임베드 — 드래그앤드롭
     // ────────────────────────────────────────
     embedDropZone.addEventListener("click", () => embedFileInput.click());
@@ -661,74 +555,8 @@
     }
 
     // ────────────────────────────────────────
-    // Base64 이미지 → 파일 추출
+    // Base64 이미지 → 파일 추출 — 드래그앤드롭
     // ────────────────────────────────────────
-
-    // output/ 파일 목록 로드
-    async function loadExtractFileList() {
-      try {
-        const res  = await fetch("/api/output_files");
-        const data = await res.json();
-        extractFileSelect.innerHTML = '<option value="">-- 파일을 선택하세요 --</option>';
-        data.files.forEach(f => {
-          const opt = document.createElement("option");
-          opt.value = opt.textContent = f;
-          extractFileSelect.appendChild(opt);
-        });
-      } catch(e) {
-        console.error("파일 목록 로드 실패:", e);
-      }
-    }
-    loadExtractFileList();
-
-    btnRefreshFileList.addEventListener("click", loadExtractFileList);
-
-    extractFileSelect.addEventListener("change", () => {
-      const selected = Array.from(extractFileSelect.selectedOptions);
-      if (selected.length > 0) {
-        extractDropLabel.textContent = selected.length === 1 ? `📄 ${selected[0].value}` : `📄 ${selected.length}개 파일 선택됨`;
-        btnRunExtract.style.display  = "block";
-        extractStatus.style.display  = "none";
-        extractSavePath.style.display = "none";
-      } else {
-        btnRunExtract.style.display = "none";
-      }
-    });
-
-    // 서버 경로 기반 처리 (output/ 파일 선택 시)
-    btnRunExtract.addEventListener("click", async () => {
-      const selected = Array.from(extractFileSelect.selectedOptions).map(o => o.value);
-      if (selected.length === 0) return;
-      showExtractStatus("loading", `⏳ ${selected.length}개 파일 처리 중...`);
-      extractSavePath.style.display = "none";
-      btnRunExtract.disabled = true;
-
-      const results = [];
-      for (const filename of selected) {
-        let res, data;
-        try {
-          res  = await fetch("/api/extract_images_by_path", {
-            method : "POST",
-            headers: { "Content-Type": "application/json" },
-            body   : JSON.stringify({ filename }),
-          });
-          data = await res.json();
-        } catch(e) { results.push(`❌ ${filename}: 요청 실패`); continue; }
-        if (!data.ok) results.push(`❌ ${filename}: ${data.message}`);
-        else          results.push(`✅ output/${data.filename} (이미지 ${data.img_count}개, ${_fmtBytes(data.size)})`);
-      }
-
-      btnRunExtract.disabled = false;
-      const errCount = results.filter(r => r.startsWith("❌")).length;
-      showExtractStatus(
-        errCount === 0 ? "success" : (errCount === results.length ? "error" : "warning"),
-        errCount === 0 ? `✅ ${selected.length}개 모두 완료` : `${selected.length - errCount}/${selected.length} 완료`
-      );
-      extractSavePath.innerHTML     = results.map(r => `<div>${r}</div>`).join("");
-      extractSavePath.style.display = "block";
-    });
-
-    // 드롭존 (파일 직접 업로드)
     extractDropZone.addEventListener("click", () => extractFileInput.click());
 
     extractDropZone.addEventListener("dragover", e => {
