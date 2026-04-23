@@ -39,7 +39,6 @@ TEMPLATES  = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 # 전역 변수
 _qt_app = None
 _browser_context = None
-_hybrid_proc: subprocess.Popen | None = None  # opendataloader-pdf-hybrid 프로세스
 _playwright = None
 _gui_page = None    # Tab 1: Scraper GUI
 _user_page = None   # Tab 2: User browsing / login
@@ -147,41 +146,6 @@ async def _cleanup_playwright() -> None:
         await _playwright.stop()
 
 
-def _start_hybrid_server() -> None:
-    """opendataloader-pdf-hybrid 서버를 백그라운드 프로세스로 시작합니다."""
-    global _hybrid_proc
-    try:
-        _hybrid_proc = subprocess.Popen(
-            [
-                sys.executable, "-m", "opendataloader_pdf_hybrid",
-                "--port", "5002",
-                "--force-ocr",
-                "--ocr-lang", "ko,en",
-            ],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        print(f"[Hybrid] OCR 서버 시작 (PID {_hybrid_proc.pid}, port 5002)")
-    except FileNotFoundError:
-        # opendataloader-pdf[hybrid] 미설치 시 무시
-        print("[Hybrid] opendataloader-pdf-hybrid 미설치 — OCR 서버 생략")
-    except Exception as e:
-        print(f"[Hybrid] OCR 서버 시작 실패: {e}")
-
-
-def _stop_hybrid_server() -> None:
-    """hybrid 서버 프로세스를 종료합니다."""
-    global _hybrid_proc
-    if _hybrid_proc and _hybrid_proc.poll() is None:
-        _hybrid_proc.terminate()
-        try:
-            _hybrid_proc.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            _hybrid_proc.kill()
-        print("[Hybrid] OCR 서버 종료")
-    _hybrid_proc = None
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """서버 시작/종료 시 리소스 관리"""
@@ -196,9 +160,6 @@ async def lifespan(app: FastAPI):
     ASSETS_DIR.mkdir(parents=True, exist_ok=True)
     (BASE_DIR / "static").mkdir(parents=True, exist_ok=True)
 
-    # OCR hybrid 서버 시작
-    await asyncio.get_running_loop().run_in_executor(None, _start_hybrid_server)
-
     try:
         await run_playwright(_init_playwright())
         # 탭 열기는 서버 기동 후 실행 (백그라운드)
@@ -207,7 +168,7 @@ async def lifespan(app: FastAPI):
         else:
             asyncio.get_event_loop().create_task(_open_browser_tabs())
     except Exception as e:
-        print(f"[ERROR] Playwright init failed: {e}")
+        print(f"[ERROR] Playwright init failed: {str(e).encode('utf-8', errors='replace').decode('utf-8')}")
 
     yield
 
@@ -216,7 +177,6 @@ async def lifespan(app: FastAPI):
     except Exception:  # noqa
         pass
 
-    _stop_hybrid_server()
 
 app = FastAPI(title="Web Clipper", lifespan=lifespan)
 
@@ -1062,6 +1022,329 @@ async def _windows_ocr(img_path_str: str) -> str:
     return "\n".join(line.text for line in result.lines)
 
 
+async def _winsdk_ocr_word_boxes(img_bgr: "np.ndarray") -> list[dict]:
+    """Windows OCR 엔진으로 word 단위 bbox 추출 (캡처도구와 동일 엔진)."""
+    import tempfile, cv2 as _cv2
+    import winsdk.windows.media.ocr as win_ocr
+    import winsdk.windows.globalization as glob
+    import winsdk.windows.graphics.imaging as imaging
+    import winsdk.windows.storage as storage
+
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+        tmp_path = tf.name
+    _cv2.imwrite(tmp_path, img_bgr)
+
+    try:
+        boxes: list[dict] = []
+        for lang_tag in ("ko-KR", "en-US"):
+            lang = glob.Language(lang_tag)
+            if not win_ocr.OcrEngine.is_language_supported(lang):
+                continue
+            engine  = win_ocr.OcrEngine.try_create_from_language(lang)
+            file    = await storage.StorageFile.get_file_from_path_async(tmp_path)
+            stream  = await file.open_async(storage.FileAccessMode.READ)
+            decoder = await imaging.BitmapDecoder.create_async(stream)
+            bitmap  = await decoder.get_software_bitmap_async()
+            result  = await engine.recognize_async(bitmap)
+            for line in result.lines:
+                for word in line.words:
+                    r = word.bounding_rect
+                    boxes.append({
+                        "x": int(r.x), "y": int(r.y),
+                        "w": int(r.width), "h": int(r.height),
+                    })
+        # 중복 제거: 거의 같은 위치의 박스 (한/영 두 번 돌아서 생길 수 있음)
+        unique: list[dict] = []
+        for b in sorted(boxes, key=lambda b: b["y"]):
+            if not any(
+                abs(b["x"] - u["x"]) < 5 and abs(b["y"] - u["y"]) < 5
+                for u in unique
+            ):
+                unique.append(b)
+        return unique
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except Exception:
+            pass
+
+
+def _mask_text_regions(img_bgr: "np.ndarray", text_boxes: list[dict]) -> "np.ndarray":
+    """글자 bbox를 주변 배경색(외곽 10px 중앙값)으로 마스킹."""
+    import numpy as np
+    masked = img_bgr.copy()
+    h, w   = masked.shape[:2]
+    pad    = 10
+    for b in text_boxes:
+        x1, y1 = max(0, b["x"]), max(0, b["y"])
+        x2, y2 = min(w, b["x"] + b["w"]), min(h, b["y"] + b["h"])
+        if x2 <= x1 or y2 <= y1:
+            continue
+        # 외곽 테두리 픽셀 수집
+        border_pixels = []
+        if y1 - pad >= 0:
+            border_pixels.append(masked[max(0, y1-pad):y1, x1:x2].reshape(-1, 3))
+        if y2 + pad <= h:
+            border_pixels.append(masked[y2:min(h, y2+pad), x1:x2].reshape(-1, 3))
+        if x1 - pad >= 0:
+            border_pixels.append(masked[y1:y2, max(0, x1-pad):x1].reshape(-1, 3))
+        if x2 + pad <= w:
+            border_pixels.append(masked[y1:y2, x2:min(w, x2+pad)].reshape(-1, 3))
+        if border_pixels:
+            all_px  = np.concatenate(border_pixels, axis=0)
+            bg_color = np.median(all_px, axis=0).astype(np.uint8)
+        else:
+            bg_color = np.array([255, 255, 255], dtype=np.uint8)
+        masked[y1:y2, x1:x2] = bg_color
+    return masked
+
+
+def _detect_figure_regions(masked_bgr: "np.ndarray", min_area_ratio: float = 0.005) -> list[dict]:
+    """마스킹된 이미지에서 contour 검출 후 노이즈 필터링 및 bbox 병합."""
+    import cv2, numpy as np
+    h, w      = masked_bgr.shape[:2]
+    total_area = h * w
+    min_area   = total_area * min_area_ratio
+
+    gray  = cv2.cvtColor(masked_bgr, cv2.COLOR_BGR2GRAY)
+    blur  = cv2.GaussianBlur(gray, (5, 5), 0)
+    bg_val = int(np.median(blur[:min(10, h), :]))
+    if bg_val >= 128:
+        _, th = cv2.threshold(blur, max(bg_val - 30, 200), 255, cv2.THRESH_BINARY_INV)
+    else:
+        _, th = cv2.threshold(blur, min(bg_val + 30, 80), 255, cv2.THRESH_BINARY)
+    cnts, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    rects: list[tuple] = []
+    for c in cnts:
+        rx, ry, rw, rh = cv2.boundingRect(c)
+        if rw * rh >= min_area:
+            rects.append((rx, ry, rx + rw, ry + rh))
+
+    if not rects:
+        return []
+
+    # 중첩/인접 bbox 병합 (반복 수렴)
+    def merge_rects(rects):
+        merged = True
+        while merged:
+            merged = False
+            result = []
+            used   = [False] * len(rects)
+            for i, a in enumerate(rects):
+                if used[i]:
+                    continue
+                ax1, ay1, ax2, ay2 = a
+                for j, b in enumerate(rects):
+                    if i == j or used[j]:
+                        continue
+                    bx1, by1, bx2, by2 = b
+                    # 10px 여유를 두고 겹치면 병합
+                    if ax1 - 10 <= bx2 and ax2 + 10 >= bx1 and ay1 - 10 <= by2 and ay2 + 10 >= by1:
+                        ax1, ay1 = min(ax1, bx1), min(ay1, by1)
+                        ax2, ay2 = max(ax2, bx2), max(ay2, by2)
+                        used[j]  = True
+                        merged   = True
+                result.append((ax1, ay1, ax2, ay2))
+                used[i] = True
+            rects = result
+        return rects
+
+    rects = merge_rects(rects)
+    return [{"x": int(x1), "y": int(y1), "w": int(x2-x1), "h": int(y2-y1)}
+            for x1, y1, x2, y2 in rects]
+
+
+def _generate_text_overlay(img_bgr: "np.ndarray", text_boxes: list[dict]) -> "np.ndarray":
+    """원본 이미지 위에 글자 bbox를 반투명 파란색으로 오버레이."""
+    import cv2, numpy as np
+    overlay = img_bgr.copy()
+    for b in text_boxes:
+        x1, y1 = max(0, b["x"]), max(0, b["y"])
+        x2 = min(img_bgr.shape[1], b["x"] + b["w"])
+        y2 = min(img_bgr.shape[0], b["y"] + b["h"])
+        cv2.rectangle(overlay, (x1, y1), (x2, y2), (230, 160, 30), -1)
+    return cv2.addWeighted(overlay, 0.4, img_bgr, 0.6, 0)
+
+
+def _detect_and_trim_contours(
+    masked_bgr: "np.ndarray",
+    min_area_pct: float = 0.5,
+) -> "tuple[np.ndarray, list[dict]]":
+    """
+    마스킹된 이미지에서 contour 검출 + x-trim 적용.
+    min_area_pct: 이미지 면적 대비 최소 크기 (%, 0.1~10)
+    반환: (빨강 반투명 오버레이 이미지, 트림된 figure_boxes 리스트)
+    """
+    import cv2, numpy as np
+    h, w      = masked_bgr.shape[:2]
+    min_area  = h * w * (min_area_pct / 100.0)
+
+    gray  = cv2.cvtColor(masked_bgr, cv2.COLOR_BGR2GRAY)
+    blur  = cv2.GaussianBlur(gray, (5, 5), 0)
+    bg_val = int(np.median(blur[:min(10, h), :]))
+    if bg_val >= 128:
+        _, th = cv2.threshold(blur, max(bg_val - 30, 200), 255, cv2.THRESH_BINARY_INV)
+    else:
+        _, th = cv2.threshold(blur, min(bg_val + 30, 80), 255, cv2.THRESH_BINARY)
+    cnts, _ = cv2.findContours(th, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    rects: list[tuple] = []
+    for c in cnts:
+        rx, ry, rw, rh = cv2.boundingRect(c)
+        if rw * rh >= min_area:
+            rects.append((rx, ry, rx + rw, ry + rh))
+
+    # 중첩/인접 bbox 병합
+    def merge_rects(rects):
+        changed = True
+        while changed:
+            changed = False
+            out, used = [], [False] * len(rects)
+            for i, a in enumerate(rects):
+                if used[i]:
+                    continue
+                ax1, ay1, ax2, ay2 = a
+                for j, b in enumerate(rects[i+1:], i+1):
+                    if used[j]:
+                        continue
+                    bx1, by1, bx2, by2 = b
+                    if ax1-10 <= bx2 and ax2+10 >= bx1 and ay1-10 <= by2 and ay2+10 >= by1:
+                        ax1, ay1 = min(ax1, bx1), min(ay1, by1)
+                        ax2, ay2 = max(ax2, bx2), max(ay2, by2)
+                        used[j]  = True
+                        changed  = True
+                out.append((ax1, ay1, ax2, ay2))
+                used[i] = True
+            rects = out
+        return rects
+
+    rects = merge_rects(rects)
+
+    # x-trim: y 범위 내 실제 컨텐츠 x 범위 계산
+    figure_boxes: list[dict] = []
+    for (rx1, ry1, rx2, ry2) in rects:
+        ry1c, ry2c = max(0, ry1), min(h, ry2)
+        band = th[ry1c:ry2c, :]
+        col_sums = np.sum(band.astype(np.int32), axis=0)
+        nonzero  = np.where(col_sums > 0)[0]
+        if len(nonzero) == 0:
+            nx1, nx2 = rx1, rx2
+        else:
+            nx1, nx2 = int(nonzero[0]), int(nonzero[-1])
+        figure_boxes.append({"x": nx1, "y": ry1c, "w": nx2 - nx1, "h": ry2c - ry1c})
+
+    # 반투명 빨강 오버레이 생성
+    overlay = masked_bgr.copy()
+    for b in figure_boxes:
+        cv2.rectangle(overlay, (b["x"], b["y"]),
+                      (b["x"]+b["w"], b["y"]+b["h"]), (0, 0, 220), -1)
+    contour_img = cv2.addWeighted(overlay, 0.45, masked_bgr, 0.55, 0)
+
+    return contour_img, figure_boxes
+
+
+def _generate_step4_preview(img_bgr: "np.ndarray", figure_boxes: list[dict]) -> "np.ndarray":
+    """원본 이미지 위에 figure_boxes를 초록 테두리로 표시 (Step 4 미리보기)."""
+    import cv2
+    vis = img_bgr.copy()
+    for i, b in enumerate(figure_boxes):
+        cv2.rectangle(vis, (b["x"], b["y"]), (b["x"]+b["w"], b["y"]+b["h"]), (0, 210, 80), 2)
+        cv2.putText(vis, f"Fig {i+1}", (b["x"]+4, b["y"]+20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 210, 80), 2)
+    return vis
+
+
+# 마스킹된 이미지 세션 캐시 {session_id: (masked_bgr, orig_bgr)}
+_masked_session: dict[str, tuple] = {}
+
+
+@app.post("/api/auto_detect")
+async def auto_detect(request: Request):
+    """Step 1·2 이미지 생성 + 마스킹 세션 저장."""
+    import base64, io, tempfile, os, uuid
+    import cv2, numpy as np
+    from PIL import Image
+
+    body         = await request.json()
+    img_path_str = body.get("img_path", "")
+
+    if not img_path_str or not Path(img_path_str).exists():
+        return {"ok": False, "message": "이미지 파일 없음"}
+
+    try:
+        img_array = np.fromfile(img_path_str, np.uint8)
+        img_bgr   = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+        if img_bgr is None:
+            return {"ok": False, "message": "이미지 디코딩 실패"}
+
+        # Windows OCR (word 단위) — 캡처도구와 동일 엔진
+        text_boxes = await _winsdk_ocr_word_boxes(img_bgr)
+
+        # Step 1: 반투명 파란 오버레이
+        overlay_bgr = _generate_text_overlay(img_bgr, text_boxes)
+
+        # Step 2: 마스킹
+        masked_bgr = _mask_text_regions(img_bgr, text_boxes)
+
+        # 세션 저장 (Step 3 슬라이더용)
+        session_id = str(uuid.uuid4())
+        _masked_session[session_id] = (masked_bgr, img_bgr)
+
+        def bgr_to_b64(arr):
+            pil = Image.fromarray(arr[..., ::-1])
+            buf = io.BytesIO()
+            pil.save(buf, format="PNG")
+            return base64.b64encode(buf.getvalue()).decode()
+
+        return {
+            "ok":         True,
+            "session_id": session_id,
+            "text_boxes": text_boxes,
+            "overlay_b64": bgr_to_b64(overlay_bgr),
+            "masked_b64":  bgr_to_b64(masked_bgr),
+        }
+
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
+@app.post("/api/detect_contours")
+async def detect_contours(request: Request):
+    """Step 3: 슬라이더 값에 따라 contour 검출 + x-trim 결과 반환."""
+    import base64, io
+    import numpy as np
+    from PIL import Image
+
+    body       = await request.json()
+    session_id = body.get("session_id", "")
+    threshold  = float(body.get("threshold", 0.5))  # % 단위 (0.1~10)
+
+    if session_id not in _masked_session:
+        return {"ok": False, "message": "세션 없음 — 자동 검출을 다시 실행해주세요"}
+
+    masked_bgr, orig_bgr = _masked_session[session_id]
+
+    try:
+        contour_img, figure_boxes = _detect_and_trim_contours(masked_bgr, threshold)
+        step4_img = _generate_step4_preview(orig_bgr, figure_boxes)
+
+        def bgr_to_b64(arr):
+            pil = Image.fromarray(arr[..., ::-1])
+            buf = io.BytesIO()
+            pil.save(buf, format="PNG")
+            return base64.b64encode(buf.getvalue()).decode()
+
+        return {
+            "ok":           True,
+            "figure_boxes": figure_boxes,
+            "contour_b64":  bgr_to_b64(contour_img),
+            "step4_b64":    bgr_to_b64(step4_img),
+        }
+    except Exception as e:
+        return {"ok": False, "message": str(e)}
+
+
 @app.post("/api/preview_extract")
 async def preview_extract(request: Request):
     """영역별 크롭 이미지 + Windows OCR 텍스트를 미리보기용으로 반환."""
@@ -1288,4 +1571,9 @@ async def websocket_logs(ws: WebSocket):
 # 진입점
 # ──────────────────────────────────────────────
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    import os, pathlib
+    pathlib.Path("server.pid").write_text(str(os.getpid()))
+    try:
+        uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+    finally:
+        pathlib.Path("server.pid").unlink(missing_ok=True)

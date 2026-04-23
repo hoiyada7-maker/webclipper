@@ -9,3 +9,6 @@ Pillow
 markdownify
 playwright
 PyQt6
+opencv-python
+numpy
+winsdk
