@@ -1167,18 +1167,18 @@ def _generate_text_overlay(img_bgr: "np.ndarray", text_boxes: list[dict]) -> "np
     return cv2.addWeighted(overlay, 0.4, img_bgr, 0.6, 0)
 
 
-def _detect_and_trim_contours(
+def _detect_contours_fullwidth(
     masked_bgr: "np.ndarray",
     min_area_pct: float = 0.5,
 ) -> "tuple[np.ndarray, list[dict]]":
     """
-    마스킹된 이미지에서 contour 검출 + x-trim 적용.
-    min_area_pct: 이미지 면적 대비 최소 크기 (%, 0.1~10)
-    반환: (빨강 반투명 오버레이 이미지, 트림된 figure_boxes 리스트)
+    마스킹된 이미지에서 contour 검출.
+    figure_boxes는 x=0, w=img_width 전폭으로 반환 (x-trim 없음).
+    반환: (빨강 반투명 오버레이 이미지, figure_boxes 리스트)
     """
     import cv2, numpy as np
-    h, w      = masked_bgr.shape[:2]
-    min_area  = h * w * (min_area_pct / 100.0)
+    h, w     = masked_bgr.shape[:2]
+    min_area = h * w * (min_area_pct / 100.0)
 
     gray  = cv2.cvtColor(masked_bgr, cv2.COLOR_BGR2GRAY)
     blur  = cv2.GaussianBlur(gray, (5, 5), 0)
@@ -1195,64 +1195,58 @@ def _detect_and_trim_contours(
         if rw * rh >= min_area:
             rects.append((rx, ry, rx + rw, ry + rh))
 
-    # 중첩/인접 bbox 병합
-    def merge_rects(rects):
+    # Y 방향 인접/중첩 병합
+    def merge_y(rects):
         changed = True
         while changed:
             changed = False
             out, used = [], [False] * len(rects)
             for i, a in enumerate(rects):
-                if used[i]:
-                    continue
+                if used[i]: continue
                 ax1, ay1, ax2, ay2 = a
                 for j, b in enumerate(rects[i+1:], i+1):
-                    if used[j]:
-                        continue
+                    if used[j]: continue
                     bx1, by1, bx2, by2 = b
-                    if ax1-10 <= bx2 and ax2+10 >= bx1 and ay1-10 <= by2 and ay2+10 >= by1:
+                    if ay1-10 <= by2 and ay2+10 >= by1:  # Y축 인접
                         ax1, ay1 = min(ax1, bx1), min(ay1, by1)
                         ax2, ay2 = max(ax2, bx2), max(ay2, by2)
-                        used[j]  = True
-                        changed  = True
+                        used[j] = True
+                        changed = True
                 out.append((ax1, ay1, ax2, ay2))
                 used[i] = True
             rects = out
         return rects
 
-    rects = merge_rects(rects)
+    rects = merge_y(rects)
 
-    # x-trim: y 범위 내 실제 컨텐츠 x 범위 계산
+    # 전폭 figure_boxes (x=0, w=img_width)
     figure_boxes: list[dict] = []
-    for (rx1, ry1, rx2, ry2) in rects:
+    for (_, ry1, __, ry2) in rects:
         ry1c, ry2c = max(0, ry1), min(h, ry2)
-        band = th[ry1c:ry2c, :]
-        col_sums = np.sum(band.astype(np.int32), axis=0)
-        nonzero  = np.where(col_sums > 0)[0]
-        if len(nonzero) == 0:
-            nx1, nx2 = rx1, rx2
-        else:
-            nx1, nx2 = int(nonzero[0]), int(nonzero[-1])
-        figure_boxes.append({"x": nx1, "y": ry1c, "w": nx2 - nx1, "h": ry2c - ry1c})
+        figure_boxes.append({"x": 0, "y": ry1c, "w": w, "h": ry2c - ry1c})
 
-    # 반투명 빨강 오버레이 생성
+    figure_boxes.sort(key=lambda b: b["y"])
+
+    # 반투명 빨강 오버레이 (전폭 밴드)
     overlay = masked_bgr.copy()
     for b in figure_boxes:
-        cv2.rectangle(overlay, (b["x"], b["y"]),
-                      (b["x"]+b["w"], b["y"]+b["h"]), (0, 0, 220), -1)
+        cv2.rectangle(overlay, (0, b["y"]), (w, b["y"] + b["h"]), (0, 0, 220), -1)
     contour_img = cv2.addWeighted(overlay, 0.45, masked_bgr, 0.55, 0)
 
     return contour_img, figure_boxes
 
 
-def _generate_step4_preview(img_bgr: "np.ndarray", figure_boxes: list[dict]) -> "np.ndarray":
-    """원본 이미지 위에 figure_boxes를 초록 테두리로 표시 (Step 4 미리보기)."""
-    import cv2
-    vis = img_bgr.copy()
-    for i, b in enumerate(figure_boxes):
-        cv2.rectangle(vis, (b["x"], b["y"]), (b["x"]+b["w"], b["y"]+b["h"]), (0, 210, 80), 2)
-        cv2.putText(vis, f"Fig {i+1}", (b["x"]+4, b["y"]+20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 210, 80), 2)
-    return vis
+async def _ocr_text_from_bgr(img_bgr: "np.ndarray") -> str:
+    """BGR 이미지 크롭에서 텍스트만 추출 (임시파일 경유)."""
+    import tempfile, cv2 as _cv2
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tf:
+        tmp = tf.name
+    _cv2.imwrite(tmp, img_bgr)
+    try:
+        return await _windows_ocr(tmp)
+    finally:
+        try: os.unlink(tmp)
+        except Exception: pass
 
 
 # 마스킹된 이미지 세션 캐시 {session_id: (masked_bgr, orig_bgr)}
@@ -1301,6 +1295,8 @@ async def auto_detect(request: Request):
             "ok":         True,
             "session_id": session_id,
             "text_boxes": text_boxes,
+            "img_width":  int(img_bgr.shape[1]),
+            "img_height": int(img_bgr.shape[0]),
             "overlay_b64": bgr_to_b64(overlay_bgr),
             "masked_b64":  bgr_to_b64(masked_bgr),
         }
@@ -1326,8 +1322,8 @@ async def detect_contours(request: Request):
     masked_bgr, orig_bgr = _masked_session[session_id]
 
     try:
-        contour_img, figure_boxes = _detect_and_trim_contours(masked_bgr, threshold)
-        step4_img = _generate_step4_preview(orig_bgr, figure_boxes)
+        contour_img, figure_boxes = _detect_contours_fullwidth(masked_bgr, threshold)
+        step4_img = orig_bgr  # Step 4는 프론트에서 구성하므로 미리보기 불필요
 
         def bgr_to_b64(arr):
             pil = Image.fromarray(arr[..., ::-1])
@@ -1339,10 +1335,62 @@ async def detect_contours(request: Request):
             "ok":           True,
             "figure_boxes": figure_boxes,
             "contour_b64":  bgr_to_b64(contour_img),
-            "step4_b64":    bgr_to_b64(step4_img),
         }
     except Exception as e:
         return {"ok": False, "message": str(e)}
+
+
+@app.post("/api/step4_layout")
+async def step4_layout(request: Request):
+    """
+    확정된 figure_boxes 기반으로 text/figure 영역 분할 + 텍스트 OCR 실행.
+    반환: regions [{type, y, h, text?}], img_width, img_height
+    """
+    import cv2, numpy as np
+
+    body         = await request.json()
+    session_id   = body.get("session_id", "")
+    figure_boxes = body.get("figure_boxes", [])  # [{y, h}, ...]
+
+    if session_id not in _masked_session:
+        return {"ok": False, "message": "세션 없음 — 자동 검출을 다시 실행해주세요"}
+
+    _, orig_bgr = _masked_session[session_id]
+    img_h, img_w = orig_bgr.shape[:2]
+
+    # 그림 영역 Y 범위 확정 (정렬, 클램프)
+    figs = sorted(
+        [{"y": max(0, b["y"]), "h": min(img_h, b["y"] + b["h"]) - max(0, b["y"])}
+         for b in figure_boxes if b.get("h", 0) > 0],
+        key=lambda b: b["y"],
+    )
+
+    # text/figure 인터리브 영역 생성
+    regions: list[dict] = []
+    cursor = 0
+    for fig in figs:
+        y1, y2 = fig["y"], fig["y"] + fig["h"]
+        if cursor < y1:
+            regions.append({"type": "text", "y": cursor, "h": y1 - cursor})
+        regions.append({"type": "figure", "y": y1, "h": y2 - y1})
+        cursor = y2
+    if cursor < img_h:
+        regions.append({"type": "text", "y": cursor, "h": img_h - cursor})
+
+    # 텍스트 영역 OCR
+    for r in regions:
+        if r["type"] == "text":
+            crop = orig_bgr[r["y"]: r["y"] + r["h"], 0: img_w]
+            r["text"] = await _ocr_text_from_bgr(crop)
+        else:
+            r["text"] = ""
+
+    return {
+        "ok":        True,
+        "regions":   regions,
+        "img_width":  img_w,
+        "img_height": img_h,
+    }
 
 
 @app.post("/api/preview_extract")
