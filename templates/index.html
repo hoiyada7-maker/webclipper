@@ -166,6 +166,10 @@
                   <label><input type="radio" name="imgMode" value="partial-figure"> 부분그림(Crop)</label>
                 </div>
                 <div id="canvasModeIndicator" style="font-size:0.78rem; color:var(--accent); padding:4px 8px; background:rgba(79,142,247,0.1); border-radius:4px; margin-bottom:10px;"></div>
+                <div style="display:flex; gap:6px; margin-bottom:8px;">
+                  <button class="btn btn--outline" id="btnAutoDetect" style="flex:1;">🔍 수동 검출</button>
+                  <button class="btn btn--outline" id="btnQuickDetect" style="flex:1;">⚡ 자동 검출</button>
+                </div>
                 <button class="btn btn--primary btn--full" id="btnGoStep2">다음 단계: OCR 미리보기 →</button>
               </div>
             </div>
@@ -233,6 +237,82 @@
               <canvas id="overlayCanvas" style="position:absolute; top:0; left:0; cursor:crosshair;"></canvas>
             </div>
           </div>
+        </div>
+
+        <!-- 자동 검출 단계별 미리보기 패널 -->
+        <div id="autoDetectPanel" style="display:none; flex:1; overflow-y:auto; padding:14px; flex-direction:column; gap:10px;">
+
+          <!-- 공통 헤더 -->
+          <div style="display:flex; align-items:center; gap:8px; border-bottom:1px solid var(--border); padding-bottom:8px;">
+            <span id="adStepLabel" style="font-weight:bold; color:var(--text); font-size:0.95rem;"></span>
+            <button class="btn btn--outline btn--sm" id="btnAdCancel" style="margin-left:auto;">✕ 닫기</button>
+          </div>
+          <!-- 스텝 인디케이터 -->
+          <div style="display:flex; align-items:center; gap:6px;">
+            <div id="adStepDot1" style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.78rem;font-weight:bold;flex-shrink:0;">1</div>
+            <div style="flex:1;height:2px;background:var(--border);border-radius:2px;"><div id="adStepLine1" style="height:100%;width:0%;background:var(--accent);border-radius:2px;transition:width 0.3s;"></div></div>
+            <div id="adStepDot2" style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.78rem;font-weight:bold;flex-shrink:0;">2</div>
+            <div style="flex:1;height:2px;background:var(--border);border-radius:2px;"><div id="adStepLine2" style="height:100%;width:0%;background:var(--accent);border-radius:2px;transition:width 0.3s;"></div></div>
+            <div id="adStepDot3" style="width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:0.78rem;font-weight:bold;flex-shrink:0;">3</div>
+          </div>
+
+          <!-- Step 1: OCR 글자 오버레이 -->
+          <div id="adStep1" style="display:none; flex-direction:column; gap:8px;">
+            <!-- Step 1 nav (상단) -->
+            <div style="display:flex; justify-content:flex-end;">
+              <button class="btn btn--primary btn--sm" id="btnAdStep1Next">다음 →</button>
+            </div>
+            <p style="font-size:0.82rem; color:var(--text-muted);">Windows OCR이 인식한 글자 영역(파란색)입니다.</p>
+            <img id="adOverlayImg" style="max-width:100%; display:block; border-radius:4px;" />
+          </div>
+
+          <!-- Step 2: 마스킹 이미지 -->
+          <div id="adStep2" style="display:none; flex-direction:column; gap:8px;">
+            <!-- Step 2 nav (상단) -->
+            <div style="display:flex; gap:8px; justify-content:space-between;">
+              <button class="btn btn--outline btn--sm" id="btnAdStep2Prev">← 이전</button>
+              <button class="btn btn--primary btn--sm" id="btnAdStep2Next">다음 →</button>
+            </div>
+            <p style="font-size:0.82rem; color:var(--text-muted);">글자 영역을 주변 배경색으로 마스킹한 결과입니다.</p>
+            <img id="adMaskedImg" style="max-width:100%; display:block; border-radius:4px;" />
+          </div>
+
+          <!-- Step 3: contour 검출 + 수동 그림영역 추가 -->
+          <div id="adStep3" style="display:none; flex-direction:column; gap:8px;">
+            <!-- Step 3 nav (상단) -->
+            <div style="display:flex; gap:8px; justify-content:space-between;">
+              <button class="btn btn--outline btn--sm" id="btnAdStep3Prev">← 이전</button>
+              <button class="btn btn--primary btn--sm" id="btnAdStep3Next">✔ 캔버스에 적용</button>
+            </div>
+            <p style="font-size:0.82rem; color:var(--text-muted);">빨간 밴드 = 자동 감지된 그림 영역입니다. 슬라이더로 감도를 조절하고, Y좌표로 직접 추가할 수 있습니다.</p>
+            <!-- 슬라이더 -->
+            <div style="display:flex; align-items:center; gap:8px; background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:8px 10px;">
+              <span style="font-size:0.82rem; color:var(--text-muted); white-space:nowrap;">최소 크기</span>
+              <input type="range" id="adThresholdSlider" min="1" max="100" value="1"
+                     style="flex:1; accent-color:var(--accent);" />
+              <span id="adThresholdVal" style="font-size:0.82rem; font-weight:bold; color:var(--accent); min-width:38px; text-align:right;">0.1%</span>
+            </div>
+            <!-- 이미지 (클릭으로 Y 선택) -->
+            <div style="position:relative; cursor:crosshair;">
+              <img id="adContourImg" style="max-width:100%; display:block; border-radius:4px;" />
+              <canvas id="adContourCanvas" style="position:absolute; inset:0; width:100%; height:100%; pointer-events:none; border-radius:4px;"></canvas>
+              <div id="adContourLoading" style="display:none; position:absolute; inset:0; background:rgba(0,0,0,0.35); border-radius:4px; align-items:center; justify-content:center; color:#fff; font-size:0.9rem;">⏳ 분석 중...</div>
+            </div>
+            <p style="font-size:0.78rem; color:var(--text-muted); margin:0;">이미지를 클릭하면 Y1 → Y2 순으로 그림 영역을 추가합니다.</p>
+            <!-- 수동 추가 (숫자 입력) -->
+            <div style="display:flex; align-items:center; gap:6px; background:var(--surface); border:1px solid var(--border); border-radius:6px; padding:6px 10px;">
+              <span style="font-size:0.82rem; color:var(--text-muted);">Y1</span>
+              <input type="number" id="adManualY1" min="0" value="" placeholder="0"
+                     style="width:70px; padding:3px 6px; border:1px solid var(--border); border-radius:4px; background:var(--bg); color:var(--text); font-size:0.82rem;" />
+              <span style="font-size:0.82rem; color:var(--text-muted);">Y2</span>
+              <input type="number" id="adManualY2" min="0" value="" placeholder="100"
+                     style="width:70px; padding:3px 6px; border:1px solid var(--border); border-radius:4px; background:var(--bg); color:var(--text); font-size:0.82rem;" />
+              <button class="btn btn--outline btn--sm" id="btnAdManualAdd" style="margin-left:4px;">+ 추가</button>
+            </div>
+            <!-- 수동 추가 목록 -->
+            <div id="adManualList" style="display:flex; flex-direction:column; gap:4px; max-height:120px; overflow-y:auto;"></div>
+          </div>
+
         </div>
 
         <!-- OCR 미리보기 (Step 2) -->
@@ -905,11 +985,387 @@
     // ────────────────────────────────────────
     // Step 2: OCR 미리보기
     // ────────────────────────────────────────
+
+    // ── 자동 검출 Wizard 상태 ──
+    let _adSessionId      = "";
+    let _adTextBoxes      = [];
+    let _adFigureBoxes    = [];   // 자동 감지
+    let _adManualBoxes    = [];   // 수동 추가
+    let _adMaskedB64      = "";   // Step 2 마스킹 이미지 (Step 3 배경으로 재사용)
+    let _adImgNaturalW    = 1;
+    let _adImgNaturalH    = 1;
+    let _adClickY1        = null; // 이미지 클릭 Y1 임시저장
+    let _adCurrentStep    = 1;
+
+    const AD_STEP_LABELS = {
+      1: "① OCR 글자 영역 확인",
+      2: "② 글자 마스킹 결과",
+      3: "③ 그림 영역 감지 · 수동 추가",
+    };
+
+    function _adShowStep(n) {
+      _adCurrentStep = n;
+      document.getElementById("adStepLabel").textContent = AD_STEP_LABELS[n] || "";
+      [1, 2, 3].forEach(i => {
+        document.getElementById(`adStep${i}`).style.display = (i === n) ? "flex" : "none";
+        const dot = document.getElementById(`adStepDot${i}`);
+        if (i < n) {
+          dot.style.background = "var(--accent)";
+          dot.style.color = "#fff";
+          dot.style.border = "none";
+          dot.style.boxShadow = "none";
+        } else if (i === n) {
+          dot.style.background = "var(--accent)";
+          dot.style.color = "#fff";
+          dot.style.border = "2px solid var(--accent)";
+          dot.style.boxShadow = "0 0 0 3px rgba(var(--accent-rgb,80,130,255),0.25)";
+        } else {
+          dot.style.background = "var(--surface)";
+          dot.style.color = "var(--text-muted)";
+          dot.style.border = "2px solid var(--border)";
+          dot.style.boxShadow = "none";
+        }
+        if (i < 3) {
+          document.getElementById(`adStepLine${i}`).style.width = i < n ? "100%" : "0%";
+        }
+      });
+    }
+
+    function closeAutoDetectPanel() {
+      document.getElementById("autoDetectPanel").style.display = "none";
+      document.getElementById("previewContainer").style.display = "flex";
+    }
+    document.getElementById("btnAdCancel").addEventListener("click", closeAutoDetectPanel);
+
+    // Step 1 → 2
+    document.getElementById("btnAdStep1Next").addEventListener("click", () => _adShowStep(2));
+    // Step 2 nav
+    document.getElementById("btnAdStep2Prev").addEventListener("click", () => _adShowStep(1));
+    document.getElementById("btnAdStep2Next").addEventListener("click", async () => {
+      _adShowStep(3);
+      await _adRunContours();
+    });
+
+    // ── Step 3: 슬라이더 ──
+    let _adSliderTimer = null;
+    document.getElementById("adThresholdSlider").addEventListener("input", (e) => {
+      const pct = (parseInt(e.target.value) * 0.1).toFixed(1);
+      document.getElementById("adThresholdVal").textContent = pct + "%";
+      clearTimeout(_adSliderTimer);
+      _adSliderTimer = setTimeout(_adRunContours, 300);
+    });
+
+    async function _adRunContours() {
+      if (!_adSessionId) return;
+      const slider    = document.getElementById("adThresholdSlider");
+      const loading   = document.getElementById("adContourLoading");
+      const threshold = parseFloat(slider.value) * 0.1;
+      loading.style.display = "flex";
+      try {
+        const res  = await fetch("/api/detect_contours", {
+          method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: _adSessionId, threshold })
+        });
+        const data = await res.json();
+        if (!data.ok) { alert("contour 검출 실패: " + data.message); return; }
+        _adFigureBoxes = data.figure_boxes;
+        const img = document.getElementById("adContourImg");
+        // 마스킹 이미지를 배경으로 사용하고 박스는 canvas에서 직접 그림
+        const newSrc = `data:image/png;base64,${_adMaskedB64}`;
+        if (img.src === newSrc && img.complete) {
+          _adDrawManualOverlay();
+        } else {
+          img.onload = () => {
+            _adImgNaturalW = img.naturalWidth;
+            _adImgNaturalH = img.naturalHeight;
+            _adDrawManualOverlay();
+          };
+          img.src = newSrc;
+        }
+      } catch(e) { alert("오류: " + e); }
+      finally { loading.style.display = "none"; }
+    }
+
+    // ── Step 3: 이미지 클릭 — 기존 박스 삭제 또는 Y1→Y2 수동 추가 ──
+    document.getElementById("adContourImg").addEventListener("click", (e) => {
+      const img    = e.currentTarget;
+      const rect   = img.getBoundingClientRect();
+      const scaleY = _adImgNaturalH / rect.height;
+      const imgY   = Math.round((e.clientY - rect.top) * scaleY);
+
+      // Y1 대기 중이 아닐 때만 삭제 시도
+      if (_adClickY1 === null) {
+        // 수동 박스 삭제 (우선)
+        const manIdx = _adManualBoxes.findIndex(b => imgY >= b.y && imgY <= b.y + b.h);
+        if (manIdx !== -1) {
+          _adManualBoxes.splice(manIdx, 1);
+          _adRenderManualList();
+          _adDrawManualOverlay();
+          return;
+        }
+        // 자동 감지 박스 삭제
+        const figIdx = _adFigureBoxes.findIndex(b => imgY >= b.y && imgY <= b.y + b.h);
+        if (figIdx !== -1) {
+          _adFigureBoxes.splice(figIdx, 1);
+          _adDrawManualOverlay();
+          return;
+        }
+        // 빈 영역 → Y1 선택 시작
+        _adClickY1 = imgY;
+        document.getElementById("adManualY1").value = imgY;
+        document.getElementById("adManualY2").value = "";
+        _adDrawManualOverlay();
+      } else {
+        const y1 = Math.min(_adClickY1, imgY);
+        const y2 = Math.max(_adClickY1, imgY);
+        if (y2 > y1) {
+          _adAddManualBox(y1, y2);
+        }
+        _adClickY1 = null;
+        document.getElementById("adManualY1").value = "";
+        document.getElementById("adManualY2").value = "";
+      }
+    });
+
+    // 숫자 입력 + 추가 버튼
+    document.getElementById("btnAdManualAdd").addEventListener("click", () => {
+      const y1 = parseInt(document.getElementById("adManualY1").value);
+      const y2 = parseInt(document.getElementById("adManualY2").value);
+      if (isNaN(y1) || isNaN(y2) || y2 <= y1) {
+        alert("Y2 > Y1 이어야 합니다.");
+        return;
+      }
+      _adAddManualBox(y1, y2);
+      document.getElementById("adManualY1").value = "";
+      document.getElementById("adManualY2").value = "";
+      _adClickY1 = null;
+    });
+
+    function _adAddManualBox(y1, y2) {
+      _adManualBoxes.push({ y: y1, h: y2 - y1 });
+      _adRenderManualList();
+      _adDrawManualOverlay();
+    }
+
+    function _adRenderManualList() {
+      const list = document.getElementById("adManualList");
+      list.innerHTML = "";
+      _adManualBoxes.forEach((b, i) => {
+        const row = document.createElement("div");
+        row.style.cssText = "display:flex;align-items:center;gap:6px;font-size:0.8rem;padding:3px 6px;background:var(--surface);border:1px solid var(--border);border-radius:4px;";
+        row.innerHTML = `<span style="flex:1;color:var(--text);">수동 그림 영역: Y ${b.y} ~ ${b.y + b.h}</span>
+          <button style="font-size:0.75rem;padding:1px 6px;border:1px solid var(--border);border-radius:3px;background:transparent;color:var(--text-muted);cursor:pointer;">✕</button>`;
+        row.querySelector("button").addEventListener("click", () => {
+          _adManualBoxes.splice(i, 1);
+          _adRenderManualList();
+          _adDrawManualOverlay();
+        });
+        list.appendChild(row);
+      });
+    }
+
+    function _adDrawManualOverlay() {
+      const img    = document.getElementById("adContourImg");
+      const canvas = document.getElementById("adContourCanvas");
+      if (!img.complete || !img.naturalWidth) return;
+      const dW = img.clientWidth, dH = img.clientHeight;
+      canvas.width  = dW;
+      canvas.height = dH;
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, dW, dH);
+      const scaleY = dH / _adImgNaturalH;
+
+      // 자동 감지 박스 → 빨간 반투명 밴드 (클릭하면 삭제)
+      _adFigureBoxes.forEach(b => {
+        const dy = b.y * scaleY;
+        const dh = b.h * scaleY;
+        ctx.fillStyle = "rgba(255,60,60,0.22)";
+        ctx.fillRect(0, dy, dW, dh);
+        ctx.strokeStyle = "#ff3c3c";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(0, dy, dW, dh);
+        ctx.fillStyle = "rgba(255,60,60,0.7)";
+        ctx.font = "bold 11px sans-serif";
+        ctx.fillText("✕ 클릭 삭제", 6, dy + Math.min(dh / 2, 14));
+      });
+
+      // 수동 박스 → 파란 반투명 밴드 (클릭하면 삭제)
+      _adManualBoxes.forEach(b => {
+        const dy = b.y * scaleY;
+        const dh = b.h * scaleY;
+        ctx.fillStyle = "rgba(60,120,255,0.28)";
+        ctx.fillRect(0, dy, dW, dh);
+        ctx.strokeStyle = "#3a7aff";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(0, dy, dW, dh);
+        ctx.fillStyle = "rgba(60,120,255,0.8)";
+        ctx.font = "bold 11px sans-serif";
+        ctx.fillText("✕ 클릭 삭제", 6, dy + Math.min(dh / 2, 14));
+      });
+
+      // Y1 임시 라인
+      if (_adClickY1 !== null) {
+        const dy = _adClickY1 * scaleY;
+        ctx.strokeStyle = "#ffcc00";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 3]);
+        ctx.beginPath();
+        ctx.moveTo(0, dy); ctx.lineTo(dW, dy);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+    }
+
+    // Step 3 nav
+    document.getElementById("btnAdStep3Prev").addEventListener("click", () => _adShowStep(2));
+    document.getElementById("btnAdStep3Next").addEventListener("click", () => {
+      const imgPath = currentMdImages[currentImageIndex];
+      if (!imgPath) return;
+      _adApplyToCanvas(imgPath);
+      closeAutoDetectPanel();
+      drawAllBoxes();
+    });
+
+    function _buildRegionsFromFigs(figBoxes, imgW, imgH) {
+      const sorted = [...figBoxes].sort((a, b) => a.y - b.y);
+      const regions = [];
+      let cursor = 0;
+      for (const fig of sorted) {
+        const y1 = fig.y, y2 = fig.y + fig.h;
+        if (cursor < y1) regions.push({ x: 0, y: cursor, w: imgW, h: y1 - cursor, type: "text" });
+        regions.push({ x: 0, y: y1, w: imgW, h: fig.h, type: "figure" });
+        cursor = y2;
+      }
+      if (cursor < imgH) regions.push({ x: 0, y: cursor, w: imgW, h: imgH - cursor, type: "text" });
+      return regions;
+    }
+
+    function _adApplyToCanvas(imgPath) {
+      const allFigs = [..._adFigureBoxes, ..._adManualBoxes.map(b => ({ x: 0, y: b.y, w: _adImgNaturalW, h: b.h }))];
+      const regions = _buildRegionsFromFigs(allFigs, _adImgNaturalW, _adImgNaturalH);
+      boxes[imgPath] = regions;
+      const hasText   = regions.some(r => r.type === "text");
+      const hasFigure = regions.some(r => r.type === "figure");
+      const newMode   = hasText ? "partial-text" : (hasFigure ? "partial-figure" : "full-figure");
+      imageModes[imgPath] = newMode;
+      const radio = document.querySelector(`input[name="imgMode"][value="${newMode}"]`);
+      if (radio) radio.checked = true;
+      _updateCanvasMode(newMode);
+    }
+
+    // 자동 검출 시작
+    document.getElementById("btnAutoDetect").addEventListener("click", async () => {
+      const imgPath = currentMdImages[currentImageIndex];
+      if (!imgPath) return;
+      const btn = document.getElementById("btnAutoDetect");
+      btn.disabled = true;
+      btn.textContent = "⏳ OCR 분석 중...";
+      try {
+        const res = await fetch("/api/auto_detect", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ img_path: imgPath })
+        });
+        const data = await res.json();
+        if (!data.ok) { alert("자동 검출 실패: " + (data.message || "")); return; }
+
+        _adSessionId    = data.session_id;
+        _adTextBoxes    = data.text_boxes;
+        _adFigureBoxes  = [];
+        _adManualBoxes  = [];
+        _adMaskedB64    = data.masked_b64;
+        _adClickY1      = null;
+        _adImgNaturalW  = data.img_width  || 1;
+        _adImgNaturalH  = data.img_height || 1;
+        document.getElementById("adManualList").innerHTML = "";
+
+        // 슬라이더 초기화 (0.1%)
+        document.getElementById("adThresholdSlider").value = "1";
+        document.getElementById("adThresholdVal").textContent = "0.1%";
+
+        // 이미지 설정
+        document.getElementById("adOverlayImg").src = `data:image/png;base64,${data.overlay_b64}`;
+        document.getElementById("adMaskedImg").src  = `data:image/png;base64,${data.masked_b64}`;
+
+        // 패널 표시, Step 1부터 시작
+        document.getElementById("previewContainer").style.display = "none";
+        document.getElementById("autoDetectPanel").style.display  = "flex";
+        _adShowStep(1);
+      } catch(e) {
+        alert("오류: " + e);
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "🔍 수동 검출";
+      }
+    });
+
+    // ────────────────────────────────────────
     let previewRegions = [];  // 서버에서 받은 regions, final_type 포함
+
+    // 기본값(0.1%)으로 자동 검출 → boxes/imageModes 갱신 (박스 없는 이미지만, overwrite=false)
+    async function _runQuickDetectForImages(imgPaths, { overwrite = false, skipModeCheck = false } = {}) {
+      for (const imgPath of imgPaths) {
+        if (!skipModeCheck) {
+          const mode = imageModes[imgPath] || 'full-figure';
+          if (mode === 'full-figure' || mode === 'full-text') continue;
+        }
+        if (!overwrite && boxes[imgPath] && boxes[imgPath].length > 0) continue;
+
+        try {
+          const r1 = await fetch("/api/auto_detect", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ img_path: imgPath })
+          });
+          const d1 = await r1.json();
+          if (!d1.ok) continue;
+
+          const r2 = await fetch("/api/detect_contours", {
+            method: "POST", headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ session_id: d1.session_id, threshold: 0.1 })
+          });
+          const d2 = await r2.json();
+          const figBoxes = d2.ok ? d2.figure_boxes : [];
+          const regions  = _buildRegionsFromFigs(figBoxes, d1.img_width, d1.img_height);
+          boxes[imgPath] = regions;
+          const hasText = regions.some(r => r.type === "text");
+          imageModes[imgPath] = hasText ? "partial-text" : "partial-figure";
+        } catch(e) { /* 실패 시 스킵 */ }
+      }
+    }
+
+    // ⚡ 자동 검출 버튼 — 현재 이미지에 기본값으로 즉시 적용
+    document.getElementById("btnQuickDetect").addEventListener("click", async () => {
+      const imgPath = currentMdImages[currentImageIndex];
+      if (!imgPath) return;
+      const btn = document.getElementById("btnQuickDetect");
+      btn.disabled = true;
+      btn.textContent = "⏳ 검출 중...";
+      try {
+        await _runQuickDetectForImages([imgPath], { overwrite: true, skipModeCheck: true });
+        const mode = imageModes[imgPath] || 'full-figure';
+        const radio = document.querySelector(`input[name="imgMode"][value="${mode}"]`);
+        if (radio) { radio.checked = true; _updateCanvasMode(mode); }
+        drawAllBoxes();
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "⚡ 자동 검출";
+      }
+    });
 
     document.getElementById("btnGoStep2").addEventListener("click", async () => {
       const filename = textExtractFileSelect.value;
       if (!filename) return;
+
+      const btn = document.getElementById("btnGoStep2");
+      btn.disabled = true;
+      btn.textContent = "⏳ 자동 검출 중...";
+
+      // 부분 모드이지만 박스가 없는 이미지는 기본값(0.1%)으로 자동 검출
+      await _runQuickDetectForImages(currentMdImages);
+
+      // 자동 검출된 박스를 캔버스에 반영 (← 이전 시 보임)
+      drawAllBoxes();
+      btn.textContent = "⏳ OCR 처리 중...";
 
       // 전체 모드 이미지는 full:true 박스로, 부분 모드는 그린 박스 사용
       const effectiveBoxes = {};
@@ -924,12 +1380,10 @@
 
       if (Object.keys(effectiveBoxes).length === 0) {
         alert("처리할 영역이 없습니다.\n부분 모드의 경우 박스를 지정해주세요.");
+        btn.disabled = false;
+        btn.textContent = "다음 단계: OCR 미리보기 →";
         return;
       }
-
-      const btn = document.getElementById("btnGoStep2");
-      btn.disabled = true;
-      btn.textContent = "⏳ OCR 처리 중...";
 
       try {
         const res = await fetch("/api/preview_extract", {
@@ -945,6 +1399,7 @@
 
         document.getElementById("teStep1").style.display = "none";
         document.getElementById("previewContainer").style.display = "none";
+        document.getElementById("autoDetectPanel").style.display = "none";
         document.getElementById("teStep2").style.display = "block";
         document.getElementById("ocrRightPanel").style.display = "block";
       } catch(e) {
@@ -960,6 +1415,7 @@
       document.getElementById("teStep1").style.display = "";
       document.getElementById("ocrRightPanel").style.display = "none";
       document.getElementById("previewContainer").style.display = "flex";
+      drawAllBoxes();
     });
 
     function renderOcrPreview() {
