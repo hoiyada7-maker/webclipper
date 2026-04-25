@@ -98,12 +98,23 @@ async def _init_playwright() -> None:
     from playwright.async_api import async_playwright
 
     _playwright = await async_playwright().start()
-    _browser_context = await _playwright.chromium.launch_persistent_context(
-        user_data_dir=str(BASE_DIR / ".browser_profile"),
-        headless=False,
-        no_viewport=True,
-        args=["--start-maximized"],
-    )
+    for channel in ["msedge", "chrome", None]:
+        try:
+            kwargs = {"channel": channel} if channel else {}
+            _browser_context = await _playwright.chromium.launch_persistent_context(
+                user_data_dir=str(BASE_DIR / ".browser_profile"),
+                headless=False,
+                no_viewport=True,
+                args=["--start-maximized", "--disable-blink-features=AutomationControlled"],
+                ignore_default_args=["--enable-automation"],
+                **kwargs,
+            )
+            await _browser_context.add_init_script(
+                "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
+            )
+            break
+        except Exception:
+            continue
 
 
 async def _open_browser_tabs() -> None:
