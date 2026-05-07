@@ -23,5 +23,8 @@ env/
 # Claude Code 로컬 설정
 .claude/
 
+# 런타임 파일
+server.pid
+
 # 잘못 생성된 파일
 ]

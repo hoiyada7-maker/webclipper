@@ -36,6 +36,10 @@ OUTPUT_DIR = BASE_DIR / "output"
 ASSETS_DIR = OUTPUT_DIR / "assets"
 TEMPLATES  = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
+OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+ASSETS_DIR.mkdir(parents=True, exist_ok=True)
+(BASE_DIR / "static").mkdir(parents=True, exist_ok=True)
+
 # 전역 변수
 _qt_app = None
 _browser_context = None
