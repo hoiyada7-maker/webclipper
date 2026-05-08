@@ -427,7 +427,15 @@ async def _run_pipeline(
         md_path   = Path(output_md)
         html_path = Path(output_html)
 
-        # 1. MD(이미지포함)추출: 생성된 MD를 읽어 Base64 임베드 → _embedded.md 저장
+        # 1. MD(이미지링크): 잔여 Base64 data URI를 파일로 추출 → 순수 로컬경로 MD로 덮어쓰기
+        if save_md and do_md and md_path.exists():
+            await log_manager.log("🔗 이미지 링크 정리 중 (Base64 → 파일)...", "info")
+            md_text = md_path.read_text(encoding="utf-8")
+            cleaned = await asyncio.to_thread(_extract_md_images, md_text, run_id, ASSETS_DIR)
+            md_path.write_text(cleaned, encoding="utf-8")
+            await log_manager.log("✅ 이미지 링크 정리 완료", "success")
+
+        # 2. MD(이미지포함): 로컬 이미지를 Base64 임베드 → _embedded.md 저장
         if embed_md and do_md and md_path.exists():
             await log_manager.log("📎 이미지 Base64 임베드 중...", "info")
             md_text  = md_path.read_text(encoding="utf-8")
@@ -437,11 +445,11 @@ async def _run_pipeline(
             img_count = result.count("data:image/")
             await log_manager.log(f"✅ 임베드 완료 — 이미지 {img_count}개", "success")
 
-        # 2. save_html=False 이면 HTML 파일 삭제
+        # 3. save_html=False 이면 HTML 파일 삭제
         if not save_html and html_path.exists():
             html_path.unlink()
 
-        # 3. save_md=False 이면 원본 MD 파일 삭제
+        # 4. save_md=False 이면 원본 MD 파일 삭제
         if not save_md and md_path.exists():
             md_path.unlink()
 
@@ -781,6 +789,37 @@ async def get_user_page_html():
             return {"ok": False, "html": "", "message": str(e)}
 
     return await run_playwright(_impl())
+
+
+def _extract_md_images(md_text: str, stem: str, assets_dir: Path) -> str:
+    """MD 내 Base64 data URI 이미지를 파일로 추출하고 로컬 경로(./assets/)로 교체합니다."""
+    import base64, re
+
+    assets_dir.mkdir(parents=True, exist_ok=True)
+    counter = 0
+
+    def _extract(match: re.Match) -> str:
+        nonlocal counter
+        alt      = match.group(1)
+        data_uri = match.group(2).strip()
+        if not data_uri.startswith("data:image/"):
+            return match.group(0)
+        m = re.match(r"data:image/(\w+);base64,(.+)", data_uri, re.DOTALL)
+        if not m:
+            return match.group(0)
+        ext = m.group(1).lower()
+        if ext == "jpeg":
+            ext = "jpg"
+        counter += 1
+        img_name = f"{stem}_img_{counter:03d}.{ext}"
+        img_path = assets_dir / img_name
+        try:
+            img_path.write_bytes(base64.b64decode(m.group(2).strip()))
+            return f"![{alt}](./assets/{img_name})"
+        except Exception:
+            return match.group(0)
+
+    return re.sub(r'!\[([^\]]*)\]\((data:image/[^)]+)\)', _extract, md_text, flags=re.DOTALL)
 
 
 def _embed_md_images(md_text: str, output_dir: Path) -> str:
