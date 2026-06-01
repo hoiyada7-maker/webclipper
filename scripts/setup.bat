@@ -1,93 +1,93 @@
 @echo off
-chcp 949 >nul
+chcp 65001 >nul
 REM ============================================================
-REM  Web Clipper - ÃÊ±â ¼³Ä¡ ½ºÅ©¸³Æ® (Windows, 1È¸¸¸ ½ÇÇà)
+REM  Web Clipper - ì´ˆê¸° ì„¤ì¹˜ ìŠ¤í¬ë¦½íŠ¸ (Windows, 1íšŒë§Œ ì‹¤í–‰)
 REM ============================================================
 
-REM ÇÁ·ÎÁ§Æ® ·çÆ® (scripts\ ÀÇ »óÀ§ µğ·ºÅä¸®)
+REM í”„ë¡œì íŠ¸ ë£¨íŠ¸ (scripts\ ì˜ ìƒìœ„ ë””ë ‰í† ë¦¬)
 cd /d "%~dp0\.."
 
 echo ==================================================
-echo   Web Clipper ¼³Ä¡¸¦ ½ÃÀÛÇÕ´Ï´Ù
+echo   Web Clipper ì„¤ì¹˜ë¥¼ ì‹œì‘í•©ë‹ˆë‹¤
 echo ==================================================
 
-REM -- ±âÁ¸ ÇÁ·Î¼¼½º Á¤¸® --
-echo [>>] ±âÁ¸ ½ÇÇà ÇÁ·Î¼¼½º Á¤¸® Áß...
+REM -- ê¸°ì¡´ í”„ë¡œì„¸ìŠ¤ ì •ë¦¬ --
+echo [>>] ê¸°ì¡´ ì‹¤í–‰ í”„ë¡œì„¸ìŠ¤ ì •ë¦¬ ì¤‘...
 for /f "tokens=5" %%a in ('netstat -ano 2^>/dev/null ^| findstr ":8000" ^| findstr "LISTENING"') do (
     taskkill /PID %%a /F /T >/dev/null 2>&1
 )
 powershell -NoProfile -Command "Get-Process chrome -EA SilentlyContinue | Where-Object { $_.Path -like '*ms-playwright*' } | Stop-Process -Force -EA SilentlyContinue" >/dev/null 2>&1
 if exist ".browser_profile\lockfile" (del ".browser_profile\lockfile" >nul 2>&1)
 timeout /t 1 >/dev/null 2>&1
-echo [OK] Á¤¸® ¿Ï·á
+echo [OK] ì •ë¦¬ ì™„ë£Œ
 
-REM -- 1. Python È®ÀÎ --
+REM -- 1. Python í™•ì¸ --
 python --version >/dev/null 2>&1
 if errorlevel 1 (
-    echo [X] python ÀÌ ¼³Ä¡µÇ¾î ÀÖÁö ¾Ê½À´Ï´Ù.
-    echo     https://www.python.org/downloads/ ¿¡¼­ ¼³Ä¡ ÈÄ Àç½ÃµµÇÏ¼¼¿ä.
+    echo [X] python ì´ ì„¤ì¹˜ë˜ì–´ ìˆì§€ ì•ŠìŠµë‹ˆë‹¤.
+    echo     https://www.python.org/downloads/ ì—ì„œ ì„¤ì¹˜ í›„ ì¬ì‹œë„í•˜ì„¸ìš”.
     pause
     exit /b 1
 )
 for /f "tokens=*" %%v in ('python --version') do echo [OK] Python: %%v
 
-REM -- 2. °¡»óÈ¯°æ »ı¼º --
+REM -- 2. ê°€ìƒí™˜ê²½ ìƒì„± --
 if not exist ".venv\Scripts\python.exe" (
     echo.
-    echo [>>] °¡»óÈ¯°æ »ı¼º Áß...
+    echo [>>] ê°€ìƒí™˜ê²½ ìƒì„± ì¤‘...
     python -m venv .venv
-    echo [OK] °¡»óÈ¯°æ »ı¼º ¿Ï·á
+    echo [OK] ê°€ìƒí™˜ê²½ ìƒì„± ì™„ë£Œ
 ) else (
-    echo [OK] °¡»óÈ¯°æ ÀÌ¹Ì Á¸Àç
+    echo [OK] ê°€ìƒí™˜ê²½ ì´ë¯¸ ì¡´ì¬
 )
 
-REM -- 3. Visual C++ Build Tools È®ÀÎ ¹× ¼³Ä¡ (winsdk ºôµå¿ë) --
+REM -- 3. Visual C++ Build Tools í™•ì¸ ë° ì„¤ì¹˜ (winsdk ë¹Œë“œìš©) --
 echo.
-echo [>>] Visual C++ Build Tools È®ÀÎ Áß...
+echo [>>] Visual C++ Build Tools í™•ì¸ ì¤‘...
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"
 set "HAS_VCTOOLS="
 if exist "%VSWHERE%" (
     for /f "usebackq tokens=*" %%i in (`"%VSWHERE%" -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2^>nul`) do set HAS_VCTOOLS=%%i
 )
 if defined HAS_VCTOOLS (
-    echo [OK] Visual C++ Build Tools ÀÌ¹Ì ¼³Ä¡µÊ
+    echo [OK] Visual C++ Build Tools ì´ë¯¸ ì„¤ì¹˜ë¨
 ) else (
-    echo [>>] Visual C++ Build Tools ¼³Ä¡ Áß (¼öºĞ ¼Ò¿ä)...
+    echo [>>] Visual C++ Build Tools ì„¤ì¹˜ ì¤‘ (ìˆ˜ë¶„ ì†Œìš”)...
     winget install Microsoft.VisualStudio.2022.BuildTools --override "--quiet --wait --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" --accept-package-agreements --accept-source-agreements
     if errorlevel 1 (
-        echo [X] Visual C++ Build Tools ¼³Ä¡ ½ÇÆĞ
-        echo     https://visualstudio.microsoft.com/visual-cpp-build-tools/ ¿¡¼­ ¼öµ¿ ¼³Ä¡ ÈÄ Àç½ÃµµÇÏ¼¼¿ä.
+        echo [X] Visual C++ Build Tools ì„¤ì¹˜ ì‹¤íŒ¨
+        echo     https://visualstudio.microsoft.com/visual-cpp-build-tools/ ì—ì„œ ìˆ˜ë™ ì„¤ì¹˜ í›„ ì¬ì‹œë„í•˜ì„¸ìš”.
         pause
         exit /b 1
     )
-    echo [OK] Visual C++ Build Tools ¼³Ä¡ ¿Ï·á
+    echo [OK] Visual C++ Build Tools ì„¤ì¹˜ ì™„ë£Œ
 )
 
-REM -- 4. pip ¾÷±×·¹ÀÌµå ^& ÆĞÅ°Áö ¼³Ä¡ --
+REM -- 4. pip ì—…ê·¸ë ˆì´ë“œ ^& íŒ¨í‚¤ì§€ ì„¤ì¹˜ --
 echo.
-echo [>>] ÆĞÅ°Áö ¼³Ä¡ Áß...
+echo [>>] íŒ¨í‚¤ì§€ ì„¤ì¹˜ ì¤‘...
 .venv\Scripts\pip install --upgrade pip -q
 .venv\Scripts\pip install -r requirements.txt -q
-echo [OK] ÆĞÅ°Áö ¼³Ä¡ ¿Ï·á
+echo [OK] íŒ¨í‚¤ì§€ ì„¤ì¹˜ ì™„ë£Œ
 
-REM -- 5. Playwright Chromium ¼³Ä¡ --
+REM -- 5. Playwright Chromium ì„¤ì¹˜ --
 echo.
-echo [>>] Playwright Chromium ¼³Ä¡ Áß...
+echo [>>] Playwright Chromium ì„¤ì¹˜ ì¤‘...
 set PLAYWRIGHT_BROWSERS_PATH=0
 .venv\Scripts\python -m playwright install chromium
-echo [OK] Playwright Chromium ¼³Ä¡ ¿Ï·á
+echo [OK] Playwright Chromium ì„¤ì¹˜ ì™„ë£Œ
 
-REM -- 6. ÇÊ¿ä µğ·ºÅä¸® »ı¼º --
+REM -- 6. í•„ìš” ë””ë ‰í† ë¦¬ ìƒì„± --
 echo.
-echo [>>] µğ·ºÅä¸® »ı¼º Áß...
+echo [>>] ë””ë ‰í† ë¦¬ ìƒì„± ì¤‘...
 if not exist "output" mkdir output
 if not exist "output\assets" mkdir output\assets
 if not exist "static" mkdir static
-echo [OK] µğ·ºÅä¸® »ı¼º ¿Ï·á
+echo [OK] ë””ë ‰í† ë¦¬ ìƒì„± ì™„ë£Œ
 
 echo.
 echo ==================================================
-echo   ¼³Ä¡ ¿Ï·á!
-echo   ½ÇÇà: scripts\start.bat
+echo   ì„¤ì¹˜ ì™„ë£Œ!
+echo   ì‹¤í–‰: scripts\start.bat
 echo ==================================================
 pause
