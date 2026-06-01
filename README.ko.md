@@ -10,6 +10,7 @@
   <img src="https://img.shields.io/badge/Windows-10%2B-black?style=flat-square" alt="windows" />
   <img src="https://img.shields.io/badge/Linux-x86__64-black?style=flat-square" alt="linux" />
   <img src="https://img.shields.io/badge/python-3.11%2B-black?style=flat-square" alt="python" />
+  <img src="https://img.shields.io/badge/license-MIT-black?style=flat-square" alt="license" />
 </p>
 
 <p align="center">
@@ -69,6 +70,13 @@ bash scripts/setup.sh
 ```
 
 실행 후 `http://127.0.0.1:8000` 접속.
+
+또는 `make` 사용:
+
+```sh
+make setup   # 최초 1회: .venv 생성 및 패키지 설치
+make start   # 서버 실행
+```
 
 ## 동작 원리
 

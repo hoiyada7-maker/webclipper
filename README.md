@@ -10,6 +10,7 @@
   <img src="https://img.shields.io/badge/Windows-10%2B-black?style=flat-square" alt="windows" />
   <img src="https://img.shields.io/badge/Linux-x86__64-black?style=flat-square" alt="linux" />
   <img src="https://img.shields.io/badge/python-3.11%2B-black?style=flat-square" alt="python" />
+  <img src="https://img.shields.io/badge/license-MIT-black?style=flat-square" alt="license" />
 </p>
 
 <p align="center">
@@ -66,6 +67,13 @@ scripts\start.bat
 # Linux / macOS
 bash scripts/setup.sh
 ./scripts/start.sh
+```
+
+or via `make`:
+
+```sh
+make setup   # first run: create .venv and install dependencies
+make start   # start the server
 ```
 
 Then open `http://127.0.0.1:8000` in your browser.
