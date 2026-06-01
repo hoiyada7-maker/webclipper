@@ -31,14 +31,22 @@ from md_converter import run_md_pipeline
 # ──────────────────────────────────────────────
 # 앱 초기화
 # ──────────────────────────────────────────────
-BASE_DIR   = Path(__file__).parent
-OUTPUT_DIR = BASE_DIR / "output"
+# PyInstaller frozen 실행: _MEIPASS 에 번들 파일이 있고, exe 옆에 사용자 데이터를 씀
+if getattr(sys, "frozen", False):
+    BASE_DIR  = Path(sys._MEIPASS)           # 번들 리소스 (templates, static)
+    _USER_DIR = Path(sys.executable).parent  # 사용자 데이터 (output, .browser_profile)
+else:
+    BASE_DIR  = Path(__file__).parent
+    _USER_DIR = BASE_DIR
+
+OUTPUT_DIR = _USER_DIR / "output"
 ASSETS_DIR = OUTPUT_DIR / "assets"
 TEMPLATES  = Jinja2Templates(directory=str(BASE_DIR / "templates"))
 
 OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 ASSETS_DIR.mkdir(parents=True, exist_ok=True)
-(BASE_DIR / "static").mkdir(parents=True, exist_ok=True)
+if not getattr(sys, "frozen", False):
+    (BASE_DIR / "static").mkdir(parents=True, exist_ok=True)
 
 # 전역 변수
 _qt_app = None
@@ -106,7 +114,7 @@ async def _init_playwright() -> None:
         try:
             kwargs = {"channel": channel} if channel else {}
             _browser_context = await _playwright.chromium.launch_persistent_context(
-                user_data_dir=str(BASE_DIR / ".browser_profile"),
+                user_data_dir=str(_USER_DIR / ".browser_profile"),
                 headless=False,
                 no_viewport=True,
                 args=["--start-maximized", "--disable-blink-features=AutomationControlled"],
@@ -1670,12 +1678,57 @@ async def websocket_logs(ws: WebSocket):
         log_manager.disconnect(ws)
 
 # ──────────────────────────────────────────────
+# 첫 실행 Playwright 브라우저 설치
+# ──────────────────────────────────────────────
+def _ensure_playwright_browser() -> None:
+    """Playwright Chromium이 없으면 첫 실행 시 자동 다운로드."""
+    import glob as _glob, os as _os
+
+    # frozen 앱: 브라우저를 사용자 홈 디렉터리에 저장
+    if getattr(sys, "frozen", False):
+        if sys.platform == "win32":
+            browsers_path = Path(_os.environ.get("LOCALAPPDATA", Path.home())) / "webclipper" / "ms-playwright"
+        else:
+            browsers_path = Path.home() / ".webclipper" / "ms-playwright"
+        _os.environ["PLAYWRIGHT_BROWSERS_PATH"] = str(browsers_path)
+        browsers_path.mkdir(parents=True, exist_ok=True)
+
+    pw_browsers = _os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "")
+    if pw_browsers and list(Path(pw_browsers).glob("chromium-*")):
+        return  # 이미 설치됨
+
+    print("=" * 52)
+    print("  첫 실행: Chromium 브라우저를 다운로드합니다")
+    print("  (약 150MB, 인터넷 연결이 필요합니다)")
+    print("=" * 52)
+
+    if getattr(sys, "frozen", False):
+        # 번들된 Playwright driver 실행파일 사용
+        if sys.platform == "win32":
+            driver = Path(sys._MEIPASS) / "playwright" / "driver" / "playwright.cmd"
+        else:
+            driver = Path(sys._MEIPASS) / "playwright" / "driver" / "playwright"
+        subprocess.run([str(driver), "install", "chromium"], check=True)
+    else:
+        subprocess.run([sys.executable, "-m", "playwright", "install", "chromium"], check=True)
+
+    print("  다운로드 완료! 앱을 시작합니다...")
+    print("=" * 52)
+
+
+# ──────────────────────────────────────────────
 # 진입점
 # ──────────────────────────────────────────────
 if __name__ == "__main__":
     import os, pathlib
-    pathlib.Path("server.pid").write_text(str(os.getpid()))
+
+    _ensure_playwright_browser()
+
+    pid_file = _USER_DIR / "server.pid"
+    pid_file.write_text(str(os.getpid()))
     try:
-        uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+        # frozen exe에서는 reload 불가 (파일 감시가 동작하지 않음)
+        reload = not getattr(sys, "frozen", False)
+        uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=reload)
     finally:
-        pathlib.Path("server.pid").unlink(missing_ok=True)
+        pid_file.unlink(missing_ok=True)

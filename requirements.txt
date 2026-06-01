@@ -11,4 +11,3 @@ playwright
 PyQt6
 opencv-python
 numpy
-winsdk

@@ -1,0 +1,243 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows
+            artifact_name: webclipper-${{ github.ref_name }}-windows-x64.zip
+          - os: ubuntu-22.04
+            platform: linux
+            artifact_name_appimage: webclipper-${{ github.ref_name }}-linux-x86_64.AppImage
+            artifact_name_deb: webclipper_${{ github.ref_name }}_amd64.deb
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      # ── Windows 빌드 ────────────────────────────────────────────────
+      - name: Install dependencies (Windows)
+        if: matrix.platform == 'windows'
+        run: |
+          pip install -r requirements-windows.txt
+          pip install pyinstaller
+
+      - name: Build exe (Windows)
+        if: matrix.platform == 'windows'
+        run: pyinstaller webclipper.spec
+
+      - name: Package zip (Windows)
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          Compress-Archive -Path dist\webclipper\* `
+            -DestinationPath "webclipper-${tag}-windows-x64.zip"
+
+      - name: Upload Windows artifact
+        if: matrix.platform == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: webclipper-${{ github.ref_name }}-windows-x64.zip
+
+      # ── Linux 빌드 ──────────────────────────────────────────────────
+      - name: Install system deps (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y \
+            libgl1 libglib2.0-0 \
+            libxcb-cursor0 libxkbcommon-x11-0 \
+            libdbus-1-3 libxrandr2 libxss1 \
+            fuse libfuse2 \
+            ruby ruby-dev build-essential
+
+      - name: Install dependencies (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          pip install -r requirements.txt
+          pip install pyinstaller
+
+      - name: Build binary (Linux)
+        if: matrix.platform == 'linux'
+        run: pyinstaller webclipper.spec
+
+      - name: Create AppImage (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          TAG="${{ github.ref_name }}"
+
+          # appimagetool 다운로드
+          wget -q https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool-x86_64.AppImage
+
+          # AppDir 구성
+          mkdir -p webclipper.AppDir/usr/bin
+          cp -r dist/webclipper/* webclipper.AppDir/usr/bin/
+
+          cat > webclipper.AppDir/AppRun << 'EOF'
+          #!/bin/sh
+          SELF="$(readlink -f "$0")"
+          HERE="$(dirname "$SELF")"
+          exec "$HERE/usr/bin/webclipper" "$@"
+          EOF
+          chmod +x webclipper.AppDir/AppRun
+
+          cat > webclipper.AppDir/webclipper.desktop << 'EOF'
+          [Desktop Entry]
+          Name=Web Clipper
+          Comment=Clip web pages to Markdown
+          Exec=webclipper
+          Icon=webclipper
+          Type=Application
+          Categories=Utility;Network;
+          EOF
+
+          # 아이콘 (없으면 빈 PNG 생성)
+          if [ -f "static/icon.png" ]; then
+            cp static/icon.png webclipper.AppDir/webclipper.png
+          else
+            python3 -c "
+          from PIL import Image, ImageDraw
+          img = Image.new('RGBA', (256, 256), (30, 120, 200, 255))
+          img.save('webclipper.AppDir/webclipper.png')
+          "
+          fi
+
+          ARCH=x86_64 ./appimagetool-x86_64.AppImage \
+            webclipper.AppDir \
+            "webclipper-${TAG}-linux-x86_64.AppImage"
+
+      - name: Create deb (Linux)
+        if: matrix.platform == 'linux'
+        run: |
+          TAG="${{ github.ref_name }}"
+          VERSION="${TAG#v}"
+
+          # .deb 디렉터리 구조 구성
+          mkdir -p deb-pkg/DEBIAN
+          mkdir -p deb-pkg/opt/webclipper
+          mkdir -p deb-pkg/usr/bin
+          mkdir -p deb-pkg/usr/share/applications
+
+          cp -r dist/webclipper/* deb-pkg/opt/webclipper/
+          ln -sf /opt/webclipper/webclipper deb-pkg/usr/bin/webclipper
+
+          cat > deb-pkg/DEBIAN/control << EOF
+          Package: webclipper
+          Version: ${VERSION}
+          Section: utils
+          Priority: optional
+          Architecture: amd64
+          Maintainer: hoiyada7@gmail.com
+          Description: Web Clipper - Clip web pages to Markdown
+           A tool that clips web page content into self-contained Markdown files.
+          EOF
+
+          cat > deb-pkg/usr/share/applications/webclipper.desktop << 'EOF'
+          [Desktop Entry]
+          Name=Web Clipper
+          Comment=Clip web pages to Markdown
+          Exec=/usr/bin/webclipper
+          Icon=webclipper
+          Type=Application
+          Categories=Utility;Network;
+          EOF
+
+          dpkg-deb --build deb-pkg "webclipper_${TAG}_amd64.deb"
+
+      - name: Upload Linux AppImage artifact
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-appimage
+          path: webclipper-${{ github.ref_name }}-linux-x86_64.AppImage
+
+      - name: Upload Linux deb artifact
+        if: matrix.platform == 'linux'
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-deb
+          path: webclipper_${{ github.ref_name }}_amd64.deb
+
+  # ── 두 빌드 완료 후 GitHub Release 생성 ───────────────────────────
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Compute changelog
+        id: changelog
+        shell: bash
+        run: |
+          PREV_TAG=$(git tag --sort=-version:refname \
+            | grep -v "^${{ github.ref_name }}$" | head -1 || true)
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS="- first release"
+          else
+            COMMITS=$(git log "$PREV_TAG..${{ github.ref_name }}" \
+              --pretty=format:"- %s" --no-merges --reverse)
+            [ -z "$COMMITS" ] && COMMITS="- (version bump only)"
+          fi
+          {
+            echo "COMMITS<<EOF"
+            echo "$COMMITS"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "Web Clipper ${{ github.ref_name }}"
+          body: |
+            ## What changed
+
+            ${{ steps.changelog.outputs.COMMITS }}
+
+            ## Install
+
+            | Platform | Download |
+            |---|---|
+            | **Windows** (x64) | `webclipper-${{ github.ref_name }}-windows-x64.zip` — 압축 해제 후 `webclipper.exe` 실행 |
+            | **Linux** AppImage | `webclipper-${{ github.ref_name }}-linux-x86_64.AppImage` — `chmod +x` 후 실행 |
+            | **Linux** deb | `webclipper_${{ github.ref_name }}_amd64.deb` — `sudo dpkg -i` |
+
+            > **첫 실행 시** Chromium 브라우저를 자동 다운로드합니다 (~150MB, 인터넷 필요).
+          files: |
+            artifacts/windows-build/webclipper-${{ github.ref_name }}-windows-x64.zip
+            artifacts/linux-appimage/webclipper-${{ github.ref_name }}-linux-x86_64.AppImage
+            artifacts/linux-deb/webclipper_${{ github.ref_name }}_amd64.deb
