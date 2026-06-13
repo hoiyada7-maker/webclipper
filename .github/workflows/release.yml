@@ -182,9 +182,30 @@ jobs:
           name: linux-deb
           path: webclipper_${{ github.ref_name }}_amd64.deb
 
+  # ── Chrome 확장프로그램 패키징 ─────────────────────────────────────
+  build-extension:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Package extension zip
+        run: |
+          TAG="${{ github.ref_name }}"
+          cd extension
+          zip -r "../webclipper-extension-${TAG}.zip" . \
+            --exclude "*.DS_Store" --exclude "__pycache__/*"
+
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: chrome-extension
+          path: webclipper-extension-${{ github.ref_name }}.zip
+
   # ── 두 빌드 완료 후 GitHub Release 생성 ───────────────────────────
   publish:
-    needs: build
+    needs: [build, build-extension]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -232,12 +253,14 @@ jobs:
 
             | Platform | Download |
             |---|---|
+            | **Chrome 확장프로그램** | `webclipper-extension-${{ github.ref_name }}.zip` — 압축 해제 후 `chrome://extensions` → 개발자 모드 → "압축 해제된 확장프로그램 로드" |
             | **Windows** (x64) | `webclipper-${{ github.ref_name }}-windows-x64.zip` — 압축 해제 후 `webclipper.exe` 실행 |
             | **Linux** AppImage | `webclipper-${{ github.ref_name }}-linux-x86_64.AppImage` — `chmod +x` 후 실행 |
             | **Linux** deb | `webclipper_${{ github.ref_name }}_amd64.deb` — `sudo dpkg -i` |
 
             > **첫 실행 시** Chromium 브라우저를 자동 다운로드합니다 (~150MB, 인터넷 필요).
           files: |
+            artifacts/chrome-extension/webclipper-extension-${{ github.ref_name }}.zip
             artifacts/windows-build/webclipper-${{ github.ref_name }}-windows-x64.zip
             artifacts/linux-appimage/webclipper-${{ github.ref_name }}-linux-x86_64.AppImage
             artifacts/linux-deb/webclipper_${{ github.ref_name }}_amd64.deb

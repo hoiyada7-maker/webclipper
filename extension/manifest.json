@@ -1,0 +1,35 @@
+{
+  "manifest_version": 3,
+  "name": "Web Clipper",
+  "version": "1.1.0",
+  "description": "Clip web pages to self-contained Markdown files",
+  "permissions": ["activeTab", "scripting", "downloads", "storage"],
+  "host_permissions": ["<all_urls>"],
+  "background": {
+    "service_worker": "background/background.js"
+  },
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    }
+  },
+  "commands": {
+    "_execute_action": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+U",
+        "mac": "Command+Shift+U"
+      },
+      "description": "Web Clipper 열기"
+    }
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
