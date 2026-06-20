@@ -52,12 +52,14 @@ chrome.commands.onCommand.addListener(async (command) => {
       }
     } else {
       const seen = new Map();
+      let imgIdx = 0;
       for (const imgUrl of imgUrls) {
+        imgIdx++;
         const dataUrl = await fetchAsDataUrl(imgUrl).catch(() => null);
         if (dataUrl) {
-          const mime = dataUrl.match(/^data:image\/([a-z0-9+]+);/)?.[1] || 'jpg';
+          const mime = dataUrl.match(/^data:image\/([a-z0-9+]+);/)?.[1] || 'png';
           const ext  = mime === 'jpeg' ? 'jpg' : mime === 'svg+xml' ? 'svg' : mime;
-          const name = uniqueName(imgUrl, seen, ext);
+          const name = uniqueName(imgUrl, seen, imgIdx, ext);
           await dlPromise(dataUrl, `WebClips/assets/${name}`);
           imageMap[imgUrl] = `assets/${name}`;
         } else {
@@ -66,10 +68,10 @@ chrome.commands.onCommand.addListener(async (command) => {
       }
     }
 
-    const md = buildMarkdown(doc, url, title, imageMap);
-    const safeTitle = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
+    const md     = buildMarkdown(doc, url, title, imageMap);
+    const runId  = makeRunId(html);
     const mdDataUrl = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(md);
-    await dlPromise(mdDataUrl, `WebClips/${safeTitle}.md`);
+    await dlPromise(mdDataUrl, `WebClips/${runId}.md`);
 
     setBadge('OK', '#15803d');
     setTimeout(() => setBadge('', ''), 3000);
@@ -136,13 +138,43 @@ function collectImageUrls(doc, baseUrl) {
   return [...urls];
 }
 
-function uniqueName(url, seen, forcedExt) {
-  const base = decodeURIComponent(url.split('/').pop().split('?')[0]) || 'image';
-  const safe = base.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 60);
-  const ext  = forcedExt ? `.${forcedExt}` : (safe.includes('.') ? '' : '.jpg');
-  const stem = forcedExt && safe.includes('.') ? safe.replace(/\.[^.]+$/, '') : safe;
+function makeRunId(html) {
+  const now = new Date();
+  const p   = n => String(n).padStart(2, '0');
+  const ts  = `${now.getFullYear()}-${p(now.getMonth()+1)}-${p(now.getDate())} ` +
+              `${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
+  const stripped = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/g, ' ')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ').trim();
+  const raw  = (stripped.match(/\S.{0,29}/) || [''])[0];
+  const text = raw.replace(/[\\/:*?"<>|\n\r\t]/g, '').trim().slice(0, 30);
+  return text ? `${ts} ${text}` : ts;
+}
+
+function uniqueName(url, seen, index, forcedExt) {
+  const raw   = decodeURIComponent(url.split('/').pop().split('?')[0]).trim();
+  const base  = raw.replace(/[\\/:*?"<>|]/g, '_');
+  const hasExt = base.includes('.');
+
+  let stem, ext;
+  if (!base || !hasExt) {
+    ext  = forcedExt ? `.${forcedExt}` : '.png';
+    stem = `img_${String(index).padStart(3, '0')}`;
+  } else if (forcedExt) {
+    stem = base.replace(/\.[^.]+$/, '');
+    ext  = `.${forcedExt}`;
+  } else {
+    stem = base.replace(/\.[^.]+$/, '');
+    ext  = base.slice(base.lastIndexOf('.'));
+  }
+
+  stem = stem.slice(0, 60);
   let name = stem + ext, i = 1;
-  while (seen.has(name)) name = `${stem}_${i++}${ext}`;
+  while (seen.has(name)) name = `${stem}(${i++})${ext}`;
   seen.set(name, true);
   return name;
 }

@@ -113,24 +113,22 @@ document.addEventListener('DOMContentLoaded', async () => {
       } else {
         // link mode: download each image first; fall back to original URL on failure
         const seen = new Map();
+        let imgIdx = 0;
         for (const imgUrl of imgUrls) {
+          imgIdx++;
           log(`  ↓ ${shortUrl(imgUrl)}`);
           const dataUrl = await chrome.runtime.sendMessage({ type: 'FETCH_IMG', url: imgUrl });
           if (dataUrl) {
-            // Derive extension from actual MIME type in the data URL (not the URL path)
-            const mime = dataUrl.match(/^data:image\/([a-z0-9+]+);/)?.[1] || 'jpg';
-            const ext = mime === 'jpeg' ? 'jpg' : mime === 'svg+xml' ? 'svg' : mime;
-            const name = uniqueName(imgUrl, seen, ext);
+            const mime = dataUrl.match(/^data:image\/([a-z0-9+]+);/)?.[1] || 'png';
+            const ext  = mime === 'jpeg' ? 'jpg' : mime === 'svg+xml' ? 'svg' : mime;
+            const name = uniqueName(imgUrl, seen, imgIdx, ext);
             await chrome.runtime.sendMessage({
-              type: 'DOWNLOAD',
-              dataUrl,
-              filename: `WebClips/assets/${name}`,
+              type: 'DOWNLOAD', dataUrl, filename: `WebClips/assets/${name}`,
             });
             imageMap[imgUrl] = `assets/${name}`;
             log(`    ✅ ${name}`);
           } else {
-            const name = uniqueName(imgUrl, seen);
-            imageMap[imgUrl] = imgUrl; // keep original URL so image still loads from CDN
+            imageMap[imgUrl] = imgUrl;
             log(`  ⚠️ 로컬 저장 실패 (원본 URL 유지): ${shortUrl(imgUrl)}`, 'warn');
           }
         }
@@ -139,9 +137,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       log('📝 Markdown 변환 중...');
       const md = buildMarkdown(doc, url, title, imageMap);
 
-      // Save .md file
-      const safeTitle = title.replace(/[\\/:*?"<>|]/g, '_').slice(0, 80);
-      const mdFilename = `WebClips/${safeTitle}.md`;
+      // Save .md file  —  yyyy-mm-dd HHmmss 첫텍스트.md (main.py _make_run_id 규칙)
+      const runId = makeRunId(html);
+      const mdFilename = `WebClips/${runId}.md`;
       const mdDataUrl = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(md);
 
       await chrome.runtime.sendMessage({ type: 'DOWNLOAD', dataUrl: mdDataUrl, filename: mdFilename });
@@ -185,15 +183,48 @@ function collectImageUrls(doc, baseUrl) {
   return [...urls];
 }
 
-function uniqueName(url, seen, forcedExt) {
-  const base = decodeURIComponent(url.split('/').pop().split('?')[0]) || 'image';
-  const safe = base.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 60);
-  // Use forcedExt if provided (derived from actual MIME type), else keep URL ext or default to jpg
-  const ext = forcedExt ? `.${forcedExt}` : (safe.includes('.') ? '' : '.jpg');
-  const stem = forcedExt && safe.includes('.') ? safe.replace(/\.[^.]+$/, '') : safe;
-  let name = stem + ext;
-  let i = 1;
-  while (seen.has(name)) name = `${stem}_${i++}${ext}`;
+// makeRunId: main.py _make_run_id 규칙 — "yyyy-mm-dd HHmmss 첫텍스트30자"
+function makeRunId(html) {
+  const now = new Date();
+  const p   = n => String(n).padStart(2, '0');
+  const ts  = `${now.getFullYear()}-${p(now.getMonth()+1)}-${p(now.getDate())} ` +
+              `${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
+  const stripped = html
+    .replace(/<script[\s\S]*?<\/script>/gi, '')
+    .replace(/<style[\s\S]*?<\/style>/gi, '')
+    .replace(/<[^>]+>/g, ' ')
+    .replace(/&nbsp;|&#160;/g, ' ')
+    .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
+    .replace(/\s+/g, ' ').trim();
+  const raw  = (stripped.match(/\S.{0,29}/) || [''])[0];
+  const text = raw.replace(/[\\/:*?"<>|\n\r\t]/g, '').trim().slice(0, 30);
+  return text ? `${ts} ${text}` : ts;
+}
+
+// uniqueName: main.py _safe_filename + _unique_path 규칙
+//   · URL basename 사용, 위험 문자([\\/:*?"<>|]) → '_'
+//   · basename 없거나 확장자 없으면 img_NNN.ext
+//   · 충돌 시 stem(N).ext (Python과 동일)
+function uniqueName(url, seen, index, forcedExt) {
+  const raw   = decodeURIComponent(url.split('/').pop().split('?')[0]).trim();
+  const base  = raw.replace(/[\\/:*?"<>|]/g, '_');
+  const hasExt = base.includes('.');
+
+  let stem, ext;
+  if (!base || !hasExt) {
+    ext  = forcedExt ? `.${forcedExt}` : '.png';
+    stem = `img_${String(index).padStart(3, '0')}`;
+  } else if (forcedExt) {
+    stem = base.replace(/\.[^.]+$/, '');
+    ext  = `.${forcedExt}`;
+  } else {
+    stem = base.replace(/\.[^.]+$/, '');
+    ext  = base.slice(base.lastIndexOf('.'));
+  }
+
+  stem = stem.slice(0, 60);
+  let name = stem + ext, i = 1;
+  while (seen.has(name)) name = `${stem}(${i++})${ext}`;
   seen.set(name, true);
   return name;
 }
