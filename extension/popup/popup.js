@@ -33,13 +33,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 실제 등록된 단축키를 API로 읽어와 표시
   chrome.commands.getAll(cmds => {
-    const cmd = cmds.find(c => c.name === '_execute_action');
+    const cmd = cmds.find(c => c.name === 'start-clip');
     if (cmd?.shortcut) shortcutDisplay.textContent = cmd.shortcut;
   });
 
   shortcutChange.addEventListener('click', (e) => {
     e.preventDefault();
     chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
+  });
+
+  // 폴더 아이콘 — WebClips 가장 최근 파일 위치를 탐색기로 열기
+  document.getElementById('folder-btn').addEventListener('click', () => {
+    chrome.downloads.search(
+      { filenameContains: 'WebClips', orderBy: ['-startTime'], limit: 1 },
+      items => {
+        if (items.length > 0) chrome.downloads.show(items[0].id);
+        else chrome.downloads.showDefaultFolder();
+      }
+    );
   });
 
   function log(text, level = 'info') {

@@ -17,12 +17,12 @@
     }
   },
   "commands": {
-    "_execute_action": {
+    "start-clip": {
       "suggested_key": {
         "default": "Ctrl+Shift+U",
         "mac": "Command+Shift+U"
       },
-      "description": "Web Clipper 열기"
+      "description": "Web Clipper - 현재 페이지 클립"
     }
   },
   "content_scripts": [

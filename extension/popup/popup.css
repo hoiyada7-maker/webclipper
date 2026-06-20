@@ -89,8 +89,14 @@ select {
 .log-error { color: #b91c1c; }
 .log-success { color: #15803d; font-weight: 600; }
 
+.footer-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 8px 8px 14px;
+}
+
 .shortcut-hint {
-  padding: 6px 14px 10px;
   font-size: 11px;
   color: #94a3b8;
   display: flex;
@@ -100,3 +106,20 @@ select {
 .shortcut-hint strong { color: #64748b; }
 .shortcut-hint a { color: #2563eb; text-decoration: none; }
 .shortcut-hint a:hover { text-decoration: underline; }
+
+#folder-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #64748b;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  flex-shrink: 0;
+}
+#folder-btn:hover { background: #e2e8f0; color: #1e293b; }
