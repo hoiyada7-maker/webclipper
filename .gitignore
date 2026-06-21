@@ -3,7 +3,7 @@ secrets.json
 
 # 출력/캐시
 output/
-docs/
+.docs/
 __pycache__/
 *.pyc
 *.pyo

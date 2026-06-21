@@ -42,15 +42,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     chrome.tabs.create({ url: 'chrome://extensions/shortcuts' });
   });
 
-  // 폴더 아이콘 — WebClips 가장 최근 파일 위치를 탐색기로 열기
-  document.getElementById('folder-btn').addEventListener('click', () => {
-    chrome.downloads.search(
-      { filenameContains: 'WebClips', orderBy: ['-startTime'], limit: 1 },
-      items => {
-        if (items.length > 0) chrome.downloads.show(items[0].id);
-        else chrome.downloads.showDefaultFolder();
-      }
-    );
+  // 폴더 아이콘 — 마지막 클립 파일의 탐색기 위치 열기
+  document.getElementById('folder-btn').addEventListener('click', async () => {
+    const { lastClipDownloadId } = await chrome.storage.local.get('lastClipDownloadId');
+    if (lastClipDownloadId != null) chrome.downloads.show(lastClipDownloadId);
+    else chrome.downloads.showDefaultFolder();
   });
 
   function log(text, level = 'info') {
@@ -89,7 +85,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       log('📋 HTML 추출 중...' + (options.spaMode ? ' (SPA 렌더링 대기 중...)' : ''));
       const waitMs = options.spaMode ? 2000 : 0;
-      const { html, url, title } = await sendToTab(tab.id, { type: 'EXTRACT_HTML', waitMs });
+      const { html, url, title } = await extractWithFallback(tab.id, waitMs);
       log(`📄 ${title}`);
 
       // Parse in popup (full DOM access available here)
@@ -101,48 +97,43 @@ document.addEventListener('DOMContentLoaded', async () => {
       const imgUrls = collectImageUrls(doc, url);
       log(`🖼️ 이미지 ${imgUrls.length}개 발견`);
 
-      // Build imageMap: original URL → replacement (data URI or relative path)
-      // Images are resolved BEFORE building Markdown so the MD always has valid paths.
+      // runId: md filename (readable title); imgPrefix: image filenames (safe ASCII only)
+      const { runId, imgPrefix } = makeRunId(html);
+
+      // Build imageMap: original URL → data URI (base64 mode) or relative path (link mode)
       const imageMap = {};
-      if (options.mode === 'base64') {
-        for (const imgUrl of imgUrls) {
-          log(`  ↓ ${shortUrl(imgUrl)}`);
-          const dataUrl = await chrome.runtime.sendMessage({ type: 'FETCH_IMG', url: imgUrl });
-          imageMap[imgUrl] = dataUrl || imgUrl; // fallback to original URL if fetch fails
+      let imgIdx = 0;
+      for (const imgUrl of imgUrls) {
+        imgIdx++;
+        log(`  ↓ ${shortUrl(imgUrl)}`);
+        // data: URIs are already fetched inline — no round-trip needed
+        const raw = imgUrl.startsWith('data:')
+          ? imgUrl
+          : await chrome.runtime.sendMessage({ type: 'FETCH_IMG', url: imgUrl });
+        if (!raw) {
+          imageMap[imgUrl] = imgUrl;
+          log(`  ⚠️ 로컬 저장 실패 (원본 URL 유지): ${shortUrl(imgUrl)}`, 'warn');
+          continue;
         }
-      } else {
-        // link mode: download each image first; fall back to original URL on failure
-        const seen = new Map();
-        let imgIdx = 0;
-        for (const imgUrl of imgUrls) {
-          imgIdx++;
-          log(`  ↓ ${shortUrl(imgUrl)}`);
-          const dataUrl = await chrome.runtime.sendMessage({ type: 'FETCH_IMG', url: imgUrl });
-          if (dataUrl) {
-            const mime = dataUrl.match(/^data:image\/([a-z0-9+]+);/)?.[1] || 'png';
-            const ext  = mime === 'jpeg' ? 'jpg' : mime === 'svg+xml' ? 'svg' : mime;
-            const name = uniqueName(imgUrl, seen, imgIdx, ext);
-            await chrome.runtime.sendMessage({
-              type: 'DOWNLOAD', dataUrl, filename: `WebClips/assets/${name}`,
-            });
-            imageMap[imgUrl] = `assets/${name}`;
-            log(`    ✅ ${name}`);
-          } else {
-            imageMap[imgUrl] = imgUrl;
-            log(`  ⚠️ 로컬 저장 실패 (원본 URL 유지): ${shortUrl(imgUrl)}`, 'warn');
-          }
+        const srcMime = raw.match(/^data:image\/([^;]+);/)?.[1] || 'png';
+        const { dataUrl, ext } = await convertImage(raw, srcMime);
+        if (options.mode === 'base64') {
+          imageMap[imgUrl] = dataUrl;
+        } else {
+          const name = `${imgPrefix}_img_${String(imgIdx).padStart(3, '0')}.${ext}`;
+          await chrome.runtime.sendMessage({ type: 'DOWNLOAD', dataUrl, filename: `WebClips/assets/${name}` });
+          imageMap[imgUrl] = `assets/${name}`;
+          log(`    ✅ ${name}`);
         }
       }
 
       log('📝 Markdown 변환 중...');
       const md = buildMarkdown(doc, url, title, imageMap);
 
-      // Save .md file  —  yyyy-mm-dd HHmmss 첫텍스트.md (main.py _make_run_id 규칙)
-      const runId = makeRunId(html);
       const mdFilename = `WebClips/${runId}.md`;
       const mdDataUrl = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(md);
-
-      await chrome.runtime.sendMessage({ type: 'DOWNLOAD', dataUrl: mdDataUrl, filename: mdFilename });
+      const dlRes = await chrome.runtime.sendMessage({ type: 'DOWNLOAD', dataUrl: mdDataUrl, filename: mdFilename });
+      chrome.storage.local.set({ lastClipDownloadId: dlRes?.id ?? null });
       log(`💾 ${mdFilename}`);
 
       log('✅ 완료!', 'success');
@@ -165,30 +156,91 @@ function sendToTab(tabId, msg) {
   });
 }
 
+// Extracts from main frame first. If content is sparse, probes sub-frames and injects
+// into only the richest one (handles iframe-based sites like Naver Blog).
+// Known iframe-based sites: the real article lives in a sub-frame at a predictable URL.
+const KNOWN_FRAME_PATTERNS = [
+  /blog\.naver\.com\/PostView/,
+  /cafe\.naver\.com\/(ca-fe|f-e)\/cafes\//,
+  /cafe\.naver\.com\/ArticleRead/,
+];
+
+async function extractWithFallback(tabId, waitMs) {
+  const main = await sendToTab(tabId, { type: 'EXTRACT_HTML', waitMs });
+  const textLen = h => h.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().length;
+
+  // Probe all frames to get URL + text length (lightweight, no content.js injection yet)
+  const probe = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: () => ({ url: location.href, len: document.body?.innerText?.trim().length ?? 0 }),
+  });
+
+  // 1. Known sites: go directly to the matching sub-frame
+  const knownFrame = probe
+    .filter(r => r.frameId !== 0)
+    .find(r => KNOWN_FRAME_PATTERNS.some(p => p.test(r.result?.url ?? '')));
+
+  if (knownFrame) {
+    await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [knownFrame.frameId] },
+      files: ['content/content.js'],
+    });
+    const sub = await new Promise(resolve => {
+      chrome.tabs.sendMessage(tabId, { type: 'EXTRACT_HTML', waitMs }, { frameId: knownFrame.frameId },
+        res => { void chrome.runtime.lastError; resolve(res ?? null); }
+      );
+    });
+    if (sub && textLen(sub.html) > 0) return sub;
+  }
+
+  // 2. Generic: main frame is rich enough
+  if (textLen(main.html) >= 500) return main;
+
+  // 3. Generic fallback: richest sub-frame by text length
+  const best = probe
+    .filter(r => r.frameId !== 0 && (r.result?.len ?? 0) > 500)
+    .sort((a, b) => (b.result?.len ?? 0) - (a.result?.len ?? 0))[0];
+  if (!best) return main;
+
+  await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [best.frameId] },
+    files: ['content/content.js'],
+  });
+  const sub = await new Promise(resolve => {
+    chrome.tabs.sendMessage(tabId, { type: 'EXTRACT_HTML', waitMs }, { frameId: best.frameId },
+      res => { void chrome.runtime.lastError; resolve(res ?? null); }
+    );
+  });
+  return (sub && textLen(sub.html) > textLen(main.html)) ? sub : main;
+}
+
 function shortUrl(url) {
+  if (url.startsWith('data:')) return `[inline ${url.match(/data:image\/([^;]+)/)?.[1] ?? 'image'}]`;
   try { return new URL(url).pathname.split('/').pop() || url; } catch { return url; }
 }
 
 function collectImageUrls(doc, baseUrl) {
   const urls = new Set();
   const resolve = (u) => {
-    if (!u || u.startsWith('data:')) return null;
+    if (!u) return null;
+    if (u.startsWith('data:image/')) return u; // inline base64 — include so it gets extracted to a file
     try { return new URL(u, baseUrl).href; } catch { return null; }
   };
   for (const img of doc.querySelectorAll('img')) {
-    const src = img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-original') || '';
+    const src = img.getAttribute('data-lazy-src') || img.getAttribute('data-lazy') || img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('src') || '';
     const r = resolve(src);
     if (r) urls.add(r);
   }
   return [...urls];
 }
 
-// makeRunId: main.py _make_run_id 규칙 — "yyyy-mm-dd HHmmss 첫텍스트30자"
+// makeRunId: md파일명 "yyyy-mm-dd HHmmss 첫텍스트30자" + 이미지용 "yyyy-mm-dd_HHmmss"
 function makeRunId(html) {
   const now = new Date();
-  const p   = n => String(n).padStart(2, '0');
-  const ts  = `${now.getFullYear()}-${p(now.getMonth()+1)}-${p(now.getDate())} ` +
-              `${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
+  const p    = n => String(n).padStart(2, '0');
+  const date = `${now.getFullYear()}-${p(now.getMonth()+1)}-${p(now.getDate())}`;
+  const time = `${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
+  const ts   = `${date} ${time}`;
   const stripped = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -198,35 +250,28 @@ function makeRunId(html) {
     .replace(/\s+/g, ' ').trim();
   const raw  = (stripped.match(/\S.{0,29}/) || [''])[0];
   const text = raw.replace(/[\\/:*?"<>|\n\r\t]/g, '').trim().slice(0, 30);
-  return text ? `${ts} ${text}` : ts;
+  const runId = text ? `${ts} ${text}` : ts;
+  return { runId, imgPrefix: `${date}_${time}` };
 }
 
-// uniqueName: main.py _safe_filename + _unique_path 규칙
-//   · URL basename 사용, 위험 문자([\\/:*?"<>|]) → '_'
-//   · basename 없거나 확장자 없으면 img_NNN.ext
-//   · 충돌 시 stem(N).ext (Python과 동일)
-function uniqueName(url, seen, index, forcedExt) {
-  const raw   = decodeURIComponent(url.split('/').pop().split('?')[0]).trim();
-  const base  = raw.replace(/[\\/:*?"<>|]/g, '_');
-  const hasExt = base.includes('.');
-
-  let stem, ext;
-  if (!base || !hasExt) {
-    ext  = forcedExt ? `.${forcedExt}` : '.png';
-    stem = `img_${String(index).padStart(3, '0')}`;
-  } else if (forcedExt) {
-    stem = base.replace(/\.[^.]+$/, '');
-    ext  = `.${forcedExt}`;
-  } else {
-    stem = base.replace(/\.[^.]+$/, '');
-    ext  = base.slice(base.lastIndexOf('.'));
-  }
-
-  stem = stem.slice(0, 60);
-  let name = stem + ext, i = 1;
-  while (seen.has(name)) name = `${stem}(${i++})${ext}`;
-  seen.set(name, true);
-  return name;
+// convertImage: keeps JPEG/PNG/GIF/SVG as-is; converts WebP/AVIF/etc. to PNG via Canvas
+async function convertImage(dataUrl, mime) {
+  if (mime === 'png')     return { dataUrl, ext: 'png' };
+  if (mime === 'jpeg')    return { dataUrl, ext: 'jpg' };
+  if (mime === 'gif')     return { dataUrl, ext: 'gif' };
+  if (mime === 'svg+xml') return { dataUrl, ext: 'svg' };
+  return new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width  = img.naturalWidth  || 1;
+      c.height = img.naturalHeight || 1;
+      c.getContext('2d').drawImage(img, 0, 0);
+      resolve({ dataUrl: c.toDataURL('image/png'), ext: 'png' });
+    };
+    img.onerror = () => resolve({ dataUrl, ext: 'png' });
+    img.src = dataUrl;
+  });
 }
 
 function cleanDoc(doc, removeNoise) {
@@ -257,26 +302,41 @@ function cleanDoc(doc, removeNoise) {
 
 // ─── Markdown Builder ─────────────────────────────────────────────────────────
 
-function buildMarkdown(doc, url, title, imageMap) {
-  const main = doc.querySelector(
-    // Generic
-    'article, main, [role="main"], .post-content, .entry-content, ' +
-    '.article-body, .markdown-body, .post-body, .content, ' +
-    // FluidTopics (Siemens docs, Paligo, etc.) — classes from live DOM inspection
-    '.component-content, .component-main, .component-content-inner-wrapper, ' +
-    '.designed-reader-component, .FT-page-body, .ft-page-body, ' +
-    '[class*="FT-topic"], [class*="FT-content"], .FT-main-content, ' +
+// Tries selectors in priority order; returns the first element with >200 chars of text.
+// Unlike querySelector(a,b,c) which returns the first DOM-order match regardless of
+// selector order, this respects our priority so site-specific selectors win over generic ones.
+function pickMain(doc) {
+  const PRIORITY = [
+    // Naver Blog (Smart Editor 3/SE3)
+    '.se-main-container',
+    // Generic semantic
+    'article', 'main', '[role="main"]',
+    '.post-content', '.entry-content', '.article-body',
+    '.markdown-body',
+    // FluidTopics
+    '.component-content', '.component-main', '.component-content-inner-wrapper',
+    '.designed-reader-component', '.FT-page-body', '.ft-page-body',
+    '[class*="FT-topic"]', '[class*="FT-content"]', '.FT-main-content',
     // GitBook
-    '.page-inner, .book-body, ' +
+    '.page-inner', '.book-body',
     // Confluence
-    '#main-content, .wiki-content, ' +
+    '#main-content', '.wiki-content',
     // ReadTheDocs / MkDocs
-    '.rst-content, .md-content, .wy-nav-content, ' +
+    '.rst-content', '.md-content', '.wy-nav-content',
     // Docusaurus
-    '.theme-doc-markdown, .docMainContainer, ' +
-    // Generic fallbacks
-    '#content, #main, .container article'
-  ) || doc.body;
+    '.theme-doc-markdown', '.docMainContainer',
+    // Generic fallbacks (checked last — too common, may match sidebars)
+    '.post-body', '.content', '#content', '#main', '.container article',
+  ];
+  for (const sel of PRIORITY) {
+    const el = doc.querySelector(sel);
+    if (el && el.innerText.trim().length > 200) return el;
+  }
+  return doc.body;
+}
+
+function buildMarkdown(doc, url, title, imageMap) {
+  const main = pickMain(doc);
 
   let md = nodeToMd(main, url, imageMap);
   md = postProcessMd(md);
@@ -357,12 +417,15 @@ function nodeToMd(node, base, imageMap) {
     }
 
     case 'img': {
-      const raw = node.getAttribute('src') || node.getAttribute('data-src') || node.getAttribute('data-original') || '';
+      const raw = node.getAttribute('data-lazy-src') || node.getAttribute('data-lazy') || node.getAttribute('data-src') || node.getAttribute('data-original') || node.getAttribute('src') || '';
       if (!raw) return '';
       const resolved = resolveUrl(raw, base);
       const mapped   = imageMap?.[resolved] ?? resolved;
       const alt = node.getAttribute('alt') || '';
-      return mapped ? `![${alt}](${mapped})` : '';
+      if (!mapped) return '';
+      const path = mapped.startsWith('http') || mapped.startsWith('data:')
+        ? mapped : mapped.replace(/ /g, '%20');
+      return `![${alt}](${path})`;
     }
 
     case 'li': {
@@ -452,8 +515,12 @@ function postProcessMd(md) {
   //   = non-breaking space, ﻿ = BOM — all invisible in rendered output
   md = md.replace(/^[\s ﻿]+$/gm, '');
 
-  // Remove lines with 15+ consecutive spaces (layout navigation bars, jumbled sidebar text)
-  md = md.replace(/^[^\n]* {15,}[^\n]*$/gm, '');
+  // Remove lines with 15+ consecutive spaces (layout noise) - protect code fences
+  { let _f = false;
+    md = md.replace(/^.*$/gm, ln => {
+      if (/^```/.test(ln)) _f = !_f;
+      return (!_f && / {15,}/.test(ln)) ? '' : ln;
+    }); }
 
   // Remove ft: metadata key-value content (FluidTopics built-in metadata panel)
   md = md.replace(/\bft:[A-Za-z]+:?[^\n]*/g, '');
@@ -504,6 +571,9 @@ function postProcessMd(md) {
   // Remove consecutive duplicate headings (FluidTopics repeats each section title 2-3×)
   md = md.replace(/(^#{1,6} .+)(\n+\1)+/gm, '$1');
 
+  // Strip leading whitespace from image lines (prevents indented code block)
+  md = md.replace(/^[ \t]+(\[?!\[)/gm, '$1');
+
   // Collapse excess blank lines and trim
   md = md.replace(/\n{3,}/g, '\n\n').trim();
 
@@ -513,6 +583,49 @@ function postProcessMd(md) {
 function tableToMd(table, base, imageMap) {
   const rows = Array.from(table.querySelectorAll('tr'));
   if (!rows.length) return '';
+
+  // Doc platforms (FluidTopics etc.) render code samples as single-column tables.
+  // The code lines live as separate block elements (<p class="p_table_l_code">) inside
+  // one <td>, with a copy-button row in the <thead>. Detect and render as a code block.
+  const isSingleCol = rows.every(r => r.querySelectorAll('td, th').length <= 1);
+  const isSourceCode = /sourcecode/i.test(table.className) ||
+    !!table.querySelector('[class*="table_l_code"], [class*="sourcecode"]');
+  if (isSingleCol || isSourceCode) {
+    // Explicit <pre> takes priority
+    const pre = table.querySelector('td pre');
+    if (pre) {
+      const lang = pre.querySelector('code')?.className.match(/language-(\w+)/)?.[1] || '';
+      const code = (pre.querySelector('code') || pre).textContent.replace(/^\n|\n$/g, '');
+      return `\n\n\`\`\`${lang}\n${code}\n\`\`\`\n\n`;
+    }
+    // Block-aware text: <p>/<div>/<li>/<br> become line breaks; &nbsp; → space
+    const cellToCode = (td) => {
+      let text = '';
+      (function walk(n) {
+        if (n.nodeType === Node.TEXT_NODE) { if (n.textContent.trim()) text += n.textContent; return; }
+        if (n.nodeType !== Node.ELEMENT_NODE) return;
+        const t = n.tagName.toLowerCase();
+        if (t === 'br') { if (!text.endsWith('\n')) text += '\n'; return; }
+        Array.from(n.childNodes).forEach(walk);
+        if (/^(p|div|li)$/.test(t) && !text.endsWith('\n')) text += '\n';
+      })(td);
+      return text.replace(/ /g, ' ').replace(/[ \t]+$/gm, '');
+    };
+    // Skip the copy-button cell (contains <img>); gather all code cells
+    const code = rows
+      .map(r => r.querySelector('td'))
+      .filter(td => td && !td.querySelector('img'))
+      .map(cellToCode)
+      .join('')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/^\n+|\n+$/g, '');
+    const looksLikeCode = isSourceCode ||
+      /[{};]/.test(code) || /\/\//.test(code) || /\.\w+\s*\(/.test(code);
+    const lineCount = (code.match(/\n/g) || []).length;
+    if (code && looksLikeCode && (isSourceCode || lineCount >= 3)) {
+      return `\n\n\`\`\`\n${code}\n\`\`\`\n\n`;
+    }
+  }
 
   const cellText = (td) =>
     Array.from(td.childNodes)
