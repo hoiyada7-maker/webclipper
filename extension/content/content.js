@@ -178,17 +178,26 @@ function serializeDeep(node) {
 }
 
 async function autoScroll() {
-  return new Promise((resolve) => {
-    let lastHeight = 0;
-    const tick = setInterval(() => {
-      window.scrollBy(0, window.innerHeight);
-      const h = document.body.scrollHeight;
-      if (h === lastHeight) {
-        clearInterval(tick);
-        window.scrollTo(0, 0);
-        resolve();
-      }
-      lastHeight = h;
-    }, 800);
-  });
+  const getH = () => Math.max(
+    document.body.scrollHeight,
+    document.documentElement.scrollHeight
+  );
+  // Scroll to absolute bottom each tick; stop after 4 consecutive stable readings
+  let stable = 0, lastH = -1;
+  for (let i = 0; i < 200 && stable < 4; i++) {
+    window.scrollTo(0, 999999999);
+    // Also try scrolling any tall overflow container (SPA inner scroll areas)
+    for (const sel of ['[class*="content"]', 'main', 'article']) {
+      const el = document.querySelector(sel);
+      if (el && el.scrollHeight > el.clientHeight + 100) el.scrollTop = el.scrollHeight;
+    }
+    await new Promise(r => setTimeout(r, 1500));
+    const h = getH();
+    if (h === lastH) stable++;
+    else { stable = 0; lastH = h; }
+  }
+  // Settle: give lazy-loaded images time to fetch before we return to top
+  await new Promise(r => setTimeout(r, 1500));
+  window.scrollTo(0, 0);
+  await new Promise(r => setTimeout(r, 500));
 }

@@ -9,13 +9,45 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 
   if (msg.type === 'DOWNLOAD') {
-    chrome.downloads.download(
-      { url: msg.dataUrl, filename: msg.filename, saveAs: false },
-      (id) => sendResponse({ id: id ?? null })
-    );
+    robustDownload(msg.dataUrl, msg.filename)
+      .then(id => sendResponse({ id: id ?? null }))
+      .catch(() => sendResponse({ id: null }));
     return true;
   }
 });
+
+// Starts a download and resolves only once it actually completes (or is interrupted).
+// chrome.downloads.download's callback fires when the download STARTS, so without
+// this many rapid sequential downloads can silently fail ("interrupted").
+function downloadAndWait(dataUrl, filename) {
+  return new Promise((resolve) => {
+    chrome.downloads.download(
+      { url: dataUrl, filename, saveAs: false, conflictAction: 'overwrite' },
+      (id) => {
+        if (id === undefined) { resolve({ id: null, ok: false }); return; }
+        const listener = (delta) => {
+          if (delta.id !== id) return;
+          const state = delta.state?.current;
+          if (state === 'complete') {
+            chrome.downloads.onChanged.removeListener(listener);
+            resolve({ id, ok: true });
+          } else if (state === 'interrupted') {
+            chrome.downloads.onChanged.removeListener(listener);
+            resolve({ id, ok: false });
+          }
+        };
+        chrome.downloads.onChanged.addListener(listener);
+      }
+    );
+  });
+}
+
+// Download with one retry on failure.
+async function robustDownload(dataUrl, filename) {
+  let r = await downloadAndWait(dataUrl, filename);
+  if (!r.ok) r = await downloadAndWait(dataUrl, filename);
+  return r.id;
+}
 
 // ── Keyboard shortcut: clip without opening popup ─────────────────────────────
 
@@ -32,46 +64,53 @@ chrome.commands.onCommand.addListener(async (command) => {
       files: ['content/content.js'],
     });
 
-    const { html, url, title } = await sendToTab(tab.id, { type: 'EXTRACT_HTML', waitMs: 0 });
-
     const opts = await chrome.storage.sync.get({
       mode: 'link', autoScroll: false, cleanOnly: true, spaMode: false,
     });
 
-    const parser = new DOMParser();
-    const doc = parser.parseFromString(html, 'text/html');
-    cleanDoc(doc, opts.cleanOnly);
+    if (opts.autoScroll) {
+      await sendToTab(tab.id, { type: 'AUTO_SCROLL' });
+    }
 
-    const imgUrls = collectImageUrls(doc, url);
+    const { html, url, title } = await extractWithFallback(tab.id, 0);
+
+    // Pass 1: parse HTML and collect image URLs in tab context (has DOMParser)
+    const [{ result: imgUrls }] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: extractImgUrlsInTab,
+      args: [html, url, opts.cleanOnly],
+    });
+
+    const { runId, imgPrefix } = makeRunId(html);
     const imageMap = {};
-
-    if (opts.mode === 'base64') {
-      for (const imgUrl of imgUrls) {
-        const dataUrl = await fetchAsDataUrl(imgUrl).catch(() => null);
-        imageMap[imgUrl] = dataUrl || imgUrl;
-      }
-    } else {
-      const seen = new Map();
-      let imgIdx = 0;
-      for (const imgUrl of imgUrls) {
-        imgIdx++;
-        const dataUrl = await fetchAsDataUrl(imgUrl).catch(() => null);
-        if (dataUrl) {
-          const mime = dataUrl.match(/^data:image\/([a-z0-9+]+);/)?.[1] || 'png';
-          const ext  = mime === 'jpeg' ? 'jpg' : mime === 'svg+xml' ? 'svg' : mime;
-          const name = uniqueName(imgUrl, seen, imgIdx, ext);
-          await dlPromise(dataUrl, `WebClips/assets/${name}`);
-          imageMap[imgUrl] = `assets/${name}`;
-        } else {
-          imageMap[imgUrl] = imgUrl;
-        }
+    let imgIdx = 0;
+    for (const imgUrl of imgUrls) {
+      imgIdx++;
+      const raw = imgUrl.startsWith('data:')
+        ? imgUrl
+        : await fetchAsDataUrl(imgUrl).catch(() => null);
+      if (!raw) { imageMap[imgUrl] = imgUrl; continue; }
+      const srcMime = raw.match(/^data:image\/([^;]+);/)?.[1] || 'png';
+      const { dataUrl, ext } = await convertImage(raw, srcMime);
+      if (opts.mode === 'base64') {
+        imageMap[imgUrl] = dataUrl;
+      } else {
+        const name = `${imgPrefix}_img_${String(imgIdx).padStart(3, '0')}.${ext}`;
+        await dlPromise(dataUrl, `WebClips/assets/${name}`);
+        imageMap[imgUrl] = `assets/${name}`;
       }
     }
 
-    const md     = buildMarkdown(doc, url, title, imageMap);
-    const runId  = makeRunId(html);
+    // Pass 2: build markdown in tab context (has DOMParser + Node constants)
+    const [{ result: md }] = await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      func: buildMdInTab,
+      args: [html, url, title, Object.entries(imageMap), opts.cleanOnly],
+    });
+
     const mdDataUrl = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(md);
-    await dlPromise(mdDataUrl, `WebClips/${runId}.md`);
+    const dlId = await dlPromise(mdDataUrl, `WebClips/${runId}.md`);
+    chrome.storage.local.set({ lastClipDownloadId: dlId ?? null });
 
     setBadge('OK', '#15803d');
     setTimeout(() => setBadge('', ''), 3000);
@@ -96,13 +135,67 @@ function sendToTab(tabId, msg) {
   });
 }
 
-function dlPromise(dataUrl, filename) {
-  return new Promise(resolve =>
-    chrome.downloads.download({ url: dataUrl, filename, saveAs: false }, resolve)
-  );
+// Known iframe-based sites: the real article lives in a sub-frame at a predictable URL.
+const KNOWN_FRAME_PATTERNS = [
+  /blog\.naver\.com\/PostView/,
+  /cafe\.naver\.com\/(ca-fe|f-e)\/cafes\//,
+  /cafe\.naver\.com\/ArticleRead/,
+];
+
+async function extractWithFallback(tabId, waitMs) {
+  const main = await sendToTab(tabId, { type: 'EXTRACT_HTML', waitMs });
+  const textLen = h => h.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().length;
+
+  // Probe all frames to get URL + text length (lightweight, no content.js injection yet)
+  const probe = await chrome.scripting.executeScript({
+    target: { tabId, allFrames: true },
+    func: () => ({ url: location.href, len: document.body?.innerText?.trim().length ?? 0 }),
+  });
+
+  // 1. Known sites: go directly to the matching sub-frame
+  const knownFrame = probe
+    .filter(r => r.frameId !== 0)
+    .find(r => KNOWN_FRAME_PATTERNS.some(p => p.test(r.result?.url ?? '')));
+
+  if (knownFrame) {
+    await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [knownFrame.frameId] },
+      files: ['content/content.js'],
+    });
+    const sub = await new Promise(resolve => {
+      chrome.tabs.sendMessage(tabId, { type: 'EXTRACT_HTML', waitMs }, { frameId: knownFrame.frameId },
+        res => { void chrome.runtime.lastError; resolve(res ?? null); }
+      );
+    });
+    if (sub && textLen(sub.html) > 0) return sub;
+  }
+
+  // 2. Generic: main frame is rich enough
+  if (textLen(main.html) >= 500) return main;
+
+  // 3. Generic fallback: richest sub-frame by text length
+  const best = probe
+    .filter(r => r.frameId !== 0 && (r.result?.len ?? 0) > 500)
+    .sort((a, b) => (b.result?.len ?? 0) - (a.result?.len ?? 0))[0];
+  if (!best) return main;
+
+  await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [best.frameId] },
+    files: ['content/content.js'],
+  });
+  const sub = await new Promise(resolve => {
+    chrome.tabs.sendMessage(tabId, { type: 'EXTRACT_HTML', waitMs }, { frameId: best.frameId },
+      res => { void chrome.runtime.lastError; resolve(res ?? null); }
+    );
+  });
+  return (sub && textLen(sub.html) > textLen(main.html)) ? sub : main;
 }
 
-// ── Image fetch helpers ───────────────────────────────────────────────────────
+function dlPromise(dataUrl, filename) {
+  return robustDownload(dataUrl, filename);
+}
+
+// ── Helpers (service-worker context) ─────────────────────────────────────────
 
 async function fetchAsDataUrl(url) {
   const res = await fetch(url, { credentials: 'include' });
@@ -121,28 +214,30 @@ async function blobToDataUrl(blob) {
   return `data:${blob.type || 'image/jpeg'};base64,${btoa(binary)}`;
 }
 
-// ── Clip pipeline (mirrors popup.js) ─────────────────────────────────────────
-// Note: Node.TEXT_NODE=3, Node.ELEMENT_NODE=1 (Node global unavailable in SW)
-
-function collectImageUrls(doc, baseUrl) {
-  const urls = new Set();
-  const resolve = u => {
-    if (!u || u.startsWith('data:')) return null;
-    try { return new URL(u, baseUrl).href; } catch { return null; }
-  };
-  for (const img of doc.querySelectorAll('img')) {
-    const src = img.getAttribute('src') || img.getAttribute('data-src') || img.getAttribute('data-original') || '';
-    const r = resolve(src);
-    if (r) urls.add(r);
+// Converts WebP/AVIF/etc. → PNG via OffscreenCanvas; JPEG/PNG/GIF/SVG kept as-is.
+async function convertImage(dataUrl, mime) {
+  if (mime === 'png')     return { dataUrl, ext: 'png' };
+  if (mime === 'jpeg')    return { dataUrl, ext: 'jpg' };
+  if (mime === 'gif')     return { dataUrl, ext: 'gif' };
+  if (mime === 'svg+xml') return { dataUrl, ext: 'svg' };
+  try {
+    const blob = await (await fetch(dataUrl)).blob();
+    const bmp  = await createImageBitmap(blob);
+    const canvas = new OffscreenCanvas(bmp.width, bmp.height);
+    canvas.getContext('2d').drawImage(bmp, 0, 0);
+    const pngBlob = await canvas.convertToBlob({ type: 'image/png' });
+    return { dataUrl: await blobToDataUrl(pngBlob), ext: 'png' };
+  } catch {
+    return { dataUrl, ext: 'png' };
   }
-  return [...urls];
 }
 
 function makeRunId(html) {
   const now = new Date();
-  const p   = n => String(n).padStart(2, '0');
-  const ts  = `${now.getFullYear()}-${p(now.getMonth()+1)}-${p(now.getDate())} ` +
-              `${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
+  const p    = n => String(n).padStart(2, '0');
+  const date = `${now.getFullYear()}-${p(now.getMonth()+1)}-${p(now.getDate())}`;
+  const time = `${p(now.getHours())}${p(now.getMinutes())}${p(now.getSeconds())}`;
+  const ts   = `${date} ${time}`;
   const stripped = html
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<style[\s\S]*?<\/style>/gi, '')
@@ -152,247 +247,331 @@ function makeRunId(html) {
     .replace(/\s+/g, ' ').trim();
   const raw  = (stripped.match(/\S.{0,29}/) || [''])[0];
   const text = raw.replace(/[\\/:*?"<>|\n\r\t]/g, '').trim().slice(0, 30);
-  return text ? `${ts} ${text}` : ts;
+  const runId = text ? `${ts} ${text}` : ts;
+  return { runId, imgPrefix: `${date}_${time}` };
 }
 
-function uniqueName(url, seen, index, forcedExt) {
-  const raw   = decodeURIComponent(url.split('/').pop().split('?')[0]).trim();
-  const base  = raw.replace(/[\\/:*?"<>|]/g, '_');
-  const hasExt = base.includes('.');
+// ── Tab-context functions ─────────────────────────────────────────────────────
+// Injected via chrome.scripting.executeScript — run in the page's isolated world
+// where DOMParser and Node constants are available.
 
-  let stem, ext;
-  if (!base || !hasExt) {
-    ext  = forcedExt ? `.${forcedExt}` : '.png';
-    stem = `img_${String(index).padStart(3, '0')}`;
-  } else if (forcedExt) {
-    stem = base.replace(/\.[^.]+$/, '');
-    ext  = `.${forcedExt}`;
-  } else {
-    stem = base.replace(/\.[^.]+$/, '');
-    ext  = base.slice(base.lastIndexOf('.'));
-  }
-
-  stem = stem.slice(0, 60);
-  let name = stem + ext, i = 1;
-  while (seen.has(name)) name = `${stem}(${i++})${ext}`;
-  seen.set(name, true);
-  return name;
-}
-
-function cleanDoc(doc, removeNoise) {
-  doc.querySelectorAll('script, style, noscript, template').forEach(el => el.remove());
+function extractImgUrlsInTab(html, baseUrl, cleanOnly) {
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  doc.querySelectorAll('script, style, noscript, template').forEach(e => e.remove());
   doc.querySelectorAll(
     '.material-icons, .material-icons-outlined, .material-icons-round, ' +
     '.material-icons-sharp, .material-icons-two-tone'
-  ).forEach(el => el.remove());
-  if (!removeNoise) return;
-  doc.querySelectorAll(
-    'nav, footer, aside, ' +
-    '[role="banner"], [role="navigation"], [role="complementary"], ' +
-    '.sidebar, .ads, .advertisement, .cookie-banner, #cookie-notice, ' +
-    '.component-loader, .loadingevent-container, .application-tools, ' +
-    '.drawerlasagna, .notificationcenter, .banner-container, ' +
-    '[class*="prev-next"], [class*="article-nav"], [class*="page-nav"], ' +
-    '[class*="language-switch"], [class*="language-select"], ' +
-    '[class*="lang-select"], [class*="breadcrumb"]'
-  ).forEach(el => el.remove());
+  ).forEach(e => e.remove());
+  if (cleanOnly) {
+    doc.querySelectorAll(
+      'nav, footer, aside, [role="banner"], [role="navigation"], [role="complementary"], ' +
+      '.sidebar, .ads, .advertisement, .cookie-banner, #cookie-notice, ' +
+      '.component-loader, .loadingevent-container, .application-tools, ' +
+      '.drawerlasagna, .notificationcenter, .banner-container, ' +
+      '[class*="prev-next"], [class*="article-nav"], [class*="page-nav"], ' +
+      '[class*="language-switch"], [class*="language-select"], ' +
+      '[class*="lang-select"], [class*="breadcrumb"]'
+    ).forEach(e => e.remove());
+  }
+  const urls = new Set();
+  for (const img of doc.querySelectorAll('img')) {
+    const src = img.getAttribute('data-lazy-src') || img.getAttribute('data-lazy') || img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('src') || '';
+    if (!src) continue;
+    if (src.startsWith('data:image/')) { urls.add(src); continue; }
+    try { urls.add(new URL(src, baseUrl).href); } catch {}
+  }
+  return [...urls];
 }
 
-function buildMarkdown(doc, url, title, imageMap) {
-  const main = doc.querySelector(
-    'article, main, [role="main"], .post-content, .entry-content, ' +
-    '.article-body, .markdown-body, .post-body, .content, ' +
-    '.component-content, .component-main, .component-content-inner-wrapper, ' +
-    '.designed-reader-component, .FT-page-body, .ft-page-body, ' +
-    '[class*="FT-topic"], [class*="FT-content"], .FT-main-content, ' +
-    '.page-inner, .book-body, #main-content, .wiki-content, ' +
-    '.rst-content, .md-content, .wy-nav-content, ' +
-    '.theme-doc-markdown, .docMainContainer, ' +
-    '#content, #main, .container article'
-  ) || doc.body;
-  let md = nodeToMd(main, url, imageMap);
-  return postProcessMd(md);
-}
 
-function resolveUrl(url, base) {
-  if (!url || url.startsWith('data:')) return url || '';
-  try { return new URL(url, base).href; } catch { return url; }
-}
+function buildMdInTab(html, baseUrl, title, imageMapEntries, cleanOnly) {
+  const imageMap = Object.fromEntries(imageMapEntries);
 
-function nodeToMd(node, base, imageMap) {
-  if (node.nodeType === 3)  // TEXT_NODE
-    return node.textContent.replace(/[\r\n]+/g, ' ').replace(/ {2,}/g, ' ');
-  if (node.nodeType !== 1) return ''; // not ELEMENT_NODE
+  function cleanDoc(doc, remove) {
+    doc.querySelectorAll('script, style, noscript, template').forEach(e => e.remove());
+    doc.querySelectorAll(
+      '.material-icons, .material-icons-outlined, .material-icons-round, ' +
+      '.material-icons-sharp, .material-icons-two-tone'
+    ).forEach(e => e.remove());
+    if (!remove) return;
+    doc.querySelectorAll(
+      'nav, footer, aside, [role="banner"], [role="navigation"], [role="complementary"], ' +
+      '.sidebar, .ads, .advertisement, .cookie-banner, #cookie-notice, ' +
+      '.component-loader, .loadingevent-container, .application-tools, ' +
+      '.drawerlasagna, .notificationcenter, .banner-container, ' +
+      '[class*="prev-next"], [class*="article-nav"], [class*="page-nav"], ' +
+      '[class*="language-switch"], [class*="language-select"], ' +
+      '[class*="lang-select"], [class*="breadcrumb"]'
+    ).forEach(e => e.remove());
+  }
 
-  const tag = node.tagName.toLowerCase();
-  if (['script','style','noscript','template','select','option','textarea','button','form'].includes(tag))
-    return '';
+  function resolveUrl(url, base) {
+    if (!url || url.startsWith('data:')) return url || '';
+    try { return new URL(url, base).href; } catch { return url; }
+  }
 
-  const kids = () => Array.from(node.childNodes).map(n => nodeToMd(n, base, imageMap)).join('');
-
-  switch (tag) {
-    case 'h1': return `\n\n# ${kids().trim()}\n\n`;
-    case 'h2': return `\n\n## ${kids().trim()}\n\n`;
-    case 'h3': return `\n\n### ${kids().trim()}\n\n`;
-    case 'h4': return `\n\n#### ${kids().trim()}\n\n`;
-    case 'h5': return `\n\n##### ${kids().trim()}\n\n`;
-    case 'h6': return `\n\n###### ${kids().trim()}\n\n`;
-    case 'p':  return `\n\n${kids().trim()}\n\n`;
-    case 'br': return '  \n';
-    case 'hr': return '\n\n---\n\n';
-
-    case 'strong': case 'b': { const t = kids(); return t.trim() ? `**${t}**` : t; }
-    case 'em': case 'i': {
-      if (tag === 'i') {
-        const cls  = node.className || '';
-        const text = node.textContent.trim();
-        if (/material-icon|^mi$/i.test(cls)) return '';
-        if (/^[a-z][a-z0-9_-]*$/.test(text) || /^[-]$/.test(text)) return '';
-      }
-      const t = kids(); return t.trim() ? `*${t}*` : t;
-    }
-    case 'del': case 's': case 'strike': { const t = kids(); return t.trim() ? `~~${t}~~` : t; }
-    case 'mark': { const t = kids(); return t.trim() ? `==${t}==` : t; }
-    case 'sup':  { const t = kids(); return t.trim() ? `^${t}^`  : t; }
-    case 'sub':  { const t = kids(); return t.trim() ? `~${t}~`  : t; }
-
-    case 'code': {
-      if (node.parentElement?.tagName.toLowerCase() === 'pre') return node.textContent;
-      return `\`${node.textContent.replace(/`/g, '\\`')}\``;
-    }
-    case 'pre': {
-      const codeEl = node.querySelector('code');
-      const cls  = codeEl?.className || '';
-      const lang = (cls.match(/language-(\w+)/) || cls.match(/lang-(\w+)/) || [])[1] || '';
-      const text = (codeEl || node).textContent.replace(/^\n|\n$/g, '');
-      return `\n\n\`\`\`${lang}\n${text}\n\`\`\`\n\n`;
-    }
-    case 'blockquote': {
-      const t = kids().trim();
-      return '\n\n' + t.split('\n').map(l => `> ${l}`).join('\n') + '\n\n';
-    }
-    case 'a': {
-      const href = resolveUrl(node.getAttribute('href'), base);
-      const t = kids().trim();
-      if (!t) return '';
-      if (!href || href === '#') return t;
-      return `[${t}](${href})`;
-    }
-    case 'img': {
-      const raw = node.getAttribute('src') || node.getAttribute('data-src') || node.getAttribute('data-original') || '';
-      if (!raw) return '';
-      const resolved = resolveUrl(raw, base);
-      const mapped   = imageMap?.[resolved] ?? resolved;
-      const alt = node.getAttribute('alt') || '';
-      return mapped ? `![${alt}](${mapped})` : '';
-    }
-    case 'li': {
-      let inlineParts = '';
-      const nestedMds = [];
-      for (const child of node.childNodes) {
-        const ctag = child.tagName?.toLowerCase();
-        if (ctag === 'ul' || ctag === 'ol') {
-          const nm = nodeToMd(child, base, imageMap).trim();
-          if (nm) nestedMds.push(nm);
-        } else {
-          inlineParts += nodeToMd(child, base, imageMap);
+  function nodeToMd(node, base, imap) {
+    if (node.nodeType === Node.TEXT_NODE)
+      return node.textContent.replace(/[\r\n]+/g, ' ').replace(/ {2,}/g, ' ');
+    if (node.nodeType !== Node.ELEMENT_NODE) return '';
+    const tag = node.tagName.toLowerCase();
+    if (['script','style','noscript','template','select','option','textarea','button','form'].includes(tag))
+      return '';
+    const kids = () => Array.from(node.childNodes).map(n => nodeToMd(n, base, imap)).join('');
+    switch (tag) {
+      case 'h1': return `\n\n# ${kids().trim()}\n\n`;
+      case 'h2': return `\n\n## ${kids().trim()}\n\n`;
+      case 'h3': return `\n\n### ${kids().trim()}\n\n`;
+      case 'h4': return `\n\n#### ${kids().trim()}\n\n`;
+      case 'h5': return `\n\n##### ${kids().trim()}\n\n`;
+      case 'h6': return `\n\n###### ${kids().trim()}\n\n`;
+      case 'p':  return `\n\n${kids().trim()}\n\n`;
+      case 'br': return '  \n';
+      case 'hr': return '\n\n---\n\n';
+      case 'strong': case 'b': { const t = kids(); return t.trim() ? `**${t}**` : t; }
+      case 'em': case 'i': {
+        if (tag === 'i') {
+          const cls = node.className || '', txt = node.textContent.trim();
+          if (/material-icon|^mi$/i.test(cls)) return '';
+          if (/^[a-z][a-z0-9_-]*$/.test(txt) || /^[-]$/.test(txt)) return '';
         }
+        const t = kids(); return t.trim() ? `*${t}*` : t;
       }
-      const text = inlineParts.replace(/^\n+|\n+$/g, '').replace(/\n{3,}/g, '\n\n').trim();
-      if (!nestedMds.length) return text;
-      const indented = nestedMds
-        .map(nm => nm.split('\n').map(l => (l ? `  ${l}` : '')).join('\n'))
-        .join('\n');
-      return text ? `${text}\n${indented}` : indented;
+      case 'del': case 's': case 'strike': { const t = kids(); return t.trim() ? `~~${t}~~` : t; }
+      case 'mark': { const t = kids(); return t.trim() ? `==${t}==` : t; }
+      case 'sup':  { const t = kids(); return t.trim() ? `^${t}^`  : t; }
+      case 'sub':  { const t = kids(); return t.trim() ? `~${t}~`  : t; }
+      case 'code': {
+        if (node.parentElement?.tagName.toLowerCase() === 'pre') return node.textContent;
+        return `\`${node.textContent.replace(/`/g, '\\`')}\``;
+      }
+      case 'pre': {
+        const codeEl = node.querySelector('code');
+        const cls  = codeEl?.className || '';
+        const lang = (cls.match(/language-(\w+)/) || cls.match(/lang-(\w+)/) || [])[1] || '';
+        const text = (codeEl || node).textContent.replace(/^\n|\n$/g, '');
+        return `\n\n\`\`\`${lang}\n${text}\n\`\`\`\n\n`;
+      }
+      case 'blockquote': {
+        const t = kids().trim();
+        return '\n\n' + t.split('\n').map(l => `> ${l}`).join('\n') + '\n\n';
+      }
+      case 'a': {
+        const href = resolveUrl(node.getAttribute('href'), base);
+        const t = kids().trim();
+        if (!t) return '';
+        if (!href || href === '#') return t;
+        return `[${t}](${href})`;
+      }
+      case 'img': {
+        const raw = node.getAttribute('data-lazy-src') || node.getAttribute('data-lazy') || node.getAttribute('data-src') || node.getAttribute('data-original') || node.getAttribute('src') || '';
+        if (!raw) return '';
+        const resolved = resolveUrl(raw, base);
+        const mapped   = imap?.[resolved] ?? resolved;
+        const alt = node.getAttribute('alt') || '';
+        if (!mapped) return '';
+        const path = mapped.startsWith('http') || mapped.startsWith('data:')
+          ? mapped : mapped.replace(/ /g, '%20');
+        return `![${alt}](${path})`;
+      }
+      case 'li': {
+        let inlineParts = '';
+        const nestedMds = [];
+        for (const child of node.childNodes) {
+          const ctag = child.tagName?.toLowerCase();
+          if (ctag === 'ul' || ctag === 'ol') {
+            const nm = nodeToMd(child, base, imap).trim();
+            if (nm) nestedMds.push(nm);
+          } else {
+            inlineParts += nodeToMd(child, base, imap);
+          }
+        }
+        const text = inlineParts.replace(/^\n+|\n+$/g, '').replace(/\n{3,}/g, '\n\n').trim();
+        if (!nestedMds.length) return text;
+        const indented = nestedMds
+          .map(nm => nm.split('\n').map(l => (l ? `  ${l}` : '')).join('\n'))
+          .join('\n');
+        return text ? `${text}\n${indented}` : indented;
+      }
+      case 'ul': {
+        const items = Array.from(node.children)
+          .filter(c => c.tagName.toLowerCase() === 'li')
+          .map(li => {
+            const content = nodeToMd(li, base, imap).trim();
+            if (!content) return '';
+            const lines = content.split('\n');
+            return lines.length === 1
+              ? `- ${lines[0]}`
+              : `- ${lines[0]}\n${lines.slice(1).map(l => (l ? `  ${l}` : '')).join('\n')}`;
+          }).filter(Boolean);
+        return items.length ? `\n\n${items.join('\n')}\n\n` : '';
+      }
+      case 'ol': {
+        let n = parseInt(node.getAttribute('start') || '1', 10);
+        const items = Array.from(node.children)
+          .filter(c => c.tagName.toLowerCase() === 'li')
+          .map(li => {
+            const num    = n++;
+            const prefix = `${num}. `;
+            const indent = ' '.repeat(prefix.length);
+            const content = nodeToMd(li, base, imap).trim();
+            if (!content) return '';
+            const lines = content.split('\n');
+            return lines.length === 1
+              ? `${prefix}${lines[0]}`
+              : `${prefix}${lines[0]}\n${lines.slice(1).map(l => (l ? `${indent}${l}` : '')).join('\n')}`;
+          }).filter(Boolean);
+        return items.length ? `\n\n${items.join('\n')}\n\n` : '';
+      }
+      case 'table': {
+        const rows = Array.from(node.querySelectorAll('tr'));
+        if (!rows.length) return '';
+        // Doc platforms (FluidTopics etc.) render code samples as single-column tables.
+        // Code lines live as separate block elements (<p class="p_table_l_code">) inside
+        // one <td>, with a copy-button row in <thead>. Render as a fenced code block.
+        const isSingleCol = rows.every(r => r.querySelectorAll('td, th').length <= 1);
+        const isSourceCode = /sourcecode/i.test(node.className) ||
+          !!node.querySelector('[class*="table_l_code"], [class*="sourcecode"]');
+        if (isSingleCol || isSourceCode) {
+          // Explicit <pre> takes priority
+          const pre = node.querySelector('td pre');
+          if (pre) {
+            const lang = pre.querySelector('code')?.className.match(/language-(\w+)/)?.[1] || '';
+            const code = (pre.querySelector('code') || pre).textContent.replace(/^\n|\n$/g, '');
+            return `\n\n\`\`\`${lang}\n${code}\n\`\`\`\n\n`;
+          }
+          // Block-aware text: <p>/<div>/<li>/<br> become line breaks; &nbsp; → space
+          const cellToCode = (td) => {
+            let text = '';
+            (function walk(n) {
+              if (n.nodeType === Node.TEXT_NODE) { if (n.textContent.trim()) text += n.textContent; return; }
+              if (n.nodeType !== Node.ELEMENT_NODE) return;
+              const t = n.tagName.toLowerCase();
+              if (t === 'br') { if (!text.endsWith('\n')) text += '\n'; return; }
+              Array.from(n.childNodes).forEach(walk);
+              if (/^(p|div|li)$/.test(t) && !text.endsWith('\n')) text += '\n';
+            })(td);
+            return text.replace(/ /g, ' ').replace(/[ \t]+$/gm, '');
+          };
+          // Skip the copy-button cell (contains <img>); gather all code cells
+          const code = rows
+            .map(r => r.querySelector('td'))
+            .filter(td => td && !td.querySelector('img'))
+            .map(cellToCode)
+            .join('')
+            .replace(/\n{3,}/g, '\n\n')
+            .replace(/^\n+|\n+$/g, '');
+          const looksLikeCode = isSourceCode ||
+            /[{};]/.test(code) || /\/\//.test(code) || /\.\w+\s*\(/.test(code);
+          const lineCount = (code.match(/\n/g) || []).length;
+          if (code && looksLikeCode && (isSourceCode || lineCount >= 3)) {
+            return `\n\n\`\`\`\n${code}\n\`\`\`\n\n`;
+          }
+        }
+        const cellText = td =>
+          Array.from(td.childNodes).map(n => nodeToMd(n, base, imap)).join('').trim()
+            .replace(/\|/g, '\\|').replace(/\n/g, ' ');
+        const matrix = rows.map(tr => Array.from(tr.querySelectorAll('th, td')).map(cellText));
+        if (!matrix.length || !matrix[0].length) return '';
+        const cols = Math.max(...matrix.map(r => r.length));
+        const pad  = row => { while (row.length < cols) row.push(''); return row; };
+        const sep  = Array(cols).fill('---');
+        const [head, ...body] = matrix;
+        const toRow = row => `| ${pad(row).join(' | ')} |`;
+        return `\n\n${toRow(head)}\n${toRow(sep)}\n${body.map(toRow).join('\n')}\n\n`;
+      }
+      case 'figure': {
+        const cap = node.querySelector('figcaption');
+        const capText = cap?.textContent.trim();
+        if (cap) cap.remove();
+        const content = kids().trim();
+        return `\n\n${content}${capText ? `\n*${capText}*` : ''}\n\n`;
+      }
+      default: return kids();
     }
-    case 'ul': {
-      const items = Array.from(node.children)
-        .filter(c => c.tagName.toLowerCase() === 'li')
-        .map(li => {
-          const content = nodeToMd(li, base, imageMap).trim();
-          if (!content) return '';
-          const lines = content.split('\n');
-          return lines.length === 1
-            ? `- ${lines[0]}`
-            : `- ${lines[0]}\n${lines.slice(1).map(l => (l ? `  ${l}` : '')).join('\n')}`;
-        }).filter(Boolean);
-      return items.length ? `\n\n${items.join('\n')}\n\n` : '';
-    }
-    case 'ol': {
-      let n = parseInt(node.getAttribute('start') || '1', 10);
-      const items = Array.from(node.children)
-        .filter(c => c.tagName.toLowerCase() === 'li')
-        .map(li => {
-          const num    = n++;
-          const prefix = `${num}. `;
-          const indent = ' '.repeat(prefix.length);
-          const content = nodeToMd(li, base, imageMap).trim();
-          if (!content) return '';
-          const lines = content.split('\n');
-          return lines.length === 1
-            ? `${prefix}${lines[0]}`
-            : `${prefix}${lines[0]}\n${lines.slice(1).map(l => (l ? `${indent}${l}` : '')).join('\n')}`;
-        }).filter(Boolean);
-      return items.length ? `\n\n${items.join('\n')}\n\n` : '';
-    }
-    case 'table': return tableToMd(node, base, imageMap);
-    case 'figure': {
-      const cap = node.querySelector('figcaption');
-      const capText = cap?.textContent.trim();
-      if (cap) cap.remove();
-      const content = kids().trim();
-      return `\n\n${content}${capText ? `\n*${capText}*` : ''}\n\n`;
-    }
-    default: return kids();
   }
-}
 
-function tableToMd(table, base, imageMap) {
-  const rows = Array.from(table.querySelectorAll('tr'));
-  if (!rows.length) return '';
-  const cellText = td =>
-    Array.from(td.childNodes)
-      .map(n => nodeToMd(n, base, imageMap))
-      .join('').trim()
-      .replace(/\|/g, '\\|').replace(/\n/g, ' ');
-  const matrix = rows.map(tr => Array.from(tr.querySelectorAll('th, td')).map(cellText));
-  if (!matrix.length || !matrix[0].length) return '';
-  const cols = Math.max(...matrix.map(r => r.length));
-  const pad  = row => { while (row.length < cols) row.push(''); return row; };
-  const sep  = Array(cols).fill('---');
-  const [head, ...body] = matrix;
-  const toRow = row => `| ${pad(row).join(' | ')} |`;
-  return `\n\n${toRow(head)}\n${toRow(sep)}\n${body.map(toRow).join('\n')}\n\n`;
-}
+  function postProcessMd(md) {
+    const cutMarkers = ['Load more results', 'Expand all\n'];
+    for (const marker of cutMarkers) {
+      const idx = md.indexOf(marker);
+      if (idx !== -1) { md = md.slice(0, idx); break; }
+    }
+    // Remove lines that are purely whitespace / non-breaking space
+    md = md.replace(/^[\s \ufeff]+$/gm, '');
 
-function postProcessMd(md) {
-  const cutMarkers = ['Load more results', 'Expand all\n'];
-  for (const marker of cutMarkers) {
-    const idx = md.indexOf(marker);
-    if (idx !== -1) { md = md.slice(0, idx); break; }
+    // Remove lines with 15+ consecutive spaces (layout noise) - protect code fences
+    { let _f = false;
+      md = md.replace(/^.*$/gm, ln => {
+        if (/^```/.test(ln)) _f = !_f;
+        return (!_f && / {15,}/.test(ln)) ? '' : ln;
+      }); }
+
+    // Remove ft: metadata key-value content
+    md = md.replace(/\bft:[A-Za-z]+:?[^\n]*/g, '');
+
+    // Remove Custom metadata panel content
+    md = md.replace(/^[^\n]*\bedge:[A-Za-z0-9]+[^\n]*$/gm, '');
+    md = md.replace(/^[^\n]*\biirds:[A-Za-z]+[^\n]*$/gm, '');
+
+    // Remove metadata panel header/ID lines
+    md = md.replace(/(?:Document|Content|Toc|Source) ID:[^\n]+/g, '');
+    md = md.replace(/\bID: [A-Za-z0-9~_-]{5,}[^\n]*/g, '');
+    md = md.replace(/\bLast publication:[^\n]+/g, '');
+    md = md.replace(/\bSource(?:\s+ID)?:\s+MKDOCS[^\n]*/g, '');
+
+    // Remove Built-in/Custom metadata section headings and empty headings
+    md = md.replace(/^#{1,6}\s+(?:Built-in|Custom) metadata\s*$/gim, '');
+    md = md.replace(/^#{1,6}\s*$/gm, '');
+
+    // Remove FluidTopics per-topic toolbar text lines
+    const TOOLBAR = [
+      'Print this topic','Copy link to clipboard','Add to personal book',
+      'Add to collection','Add this document to a collection','Download document',
+      'Preview document','Send feedback for this topic','Give feedback for this topic','Go to document',
+    ];
+    for (const phrase of TOOLBAR)
+      md = md.replace(new RegExp('^[^\\n]*' + phrase.replace(/[.*+?^${}()|[\]\\]/g,'\\$&') + '[^\\n]*$','gm'), '');
+    md = md.replace(/^[^\n]*(?:Add bookmark|Remove Bookmark)[^\n]*$/gm, '');
+
+    // Remove language switcher and orphan Close lines
+    md = md.replace(/^[^\n]*\bLanguage\b[^\n]*\b(?:Open|Close)\b[^\n]*$/gm, '');
+    md = md.replace(/^\s*Close\s*$/gm, '');
+
+    // Remove consecutive duplicate headings
+    md = md.replace(/(^#{1,6} .+)(\n+\1)+/gm, '$1');
+
+    // Strip leading whitespace from image lines (prevents indented code block)
+    md = md.replace(/^[ \t]+(\[?!\[)/gm, '$1');
+
+    // Collapse excess blank lines and trim
+    md = md.replace(/\n{3,}/g, '\n\n').trim();
+
+    return md;
   }
-  md = md.replace(/^[\s ﻿]+$/gm, '');
-  md = md.replace(/^[^\n]* {15,}[^\n]*$/gm, '');
-  md = md.replace(/\bft:[A-Za-z]+:?[^\n]*/g, '');
-  md = md.replace(/^[^\n]*\bedge:[A-Za-z0-9]+[^\n]*$/gm, '');
-  md = md.replace(/^[^\n]*\biirds:[A-Za-z]+[^\n]*$/gm, '');
-  md = md.replace(/(?:Document|Content|Toc|Source) ID:[^\n]+/g, '');
-  md = md.replace(/\bID: [A-Za-z0-9~_-]{5,}[^\n]*/g, '');
-  md = md.replace(/\bLast publication:[^\n]+/g, '');
-  md = md.replace(/\bSource(?:\s+ID)?:\s+MKDOCS[^\n]*/g, '');
-  md = md.replace(/^#{1,6}\s+(?:Built-in|Custom) metadata\s*$/gim, '');
-  md = md.replace(/^#{1,6}\s*$/gm, '');
-  const TOOLBAR = [
-    'Print this topic','Copy link to clipboard','Add to personal book',
-    'Add to collection','Add this document to a collection','Download document',
-    'Preview document','Send feedback for this topic','Give feedback for this topic','Go to document',
+
+  const doc = new DOMParser().parseFromString(html, 'text/html');
+  cleanDoc(doc, cleanOnly);
+
+  const PRIORITY = [
+    '.se-main-container',
+    'article', 'main', '[role="main"]',
+    '.post-content', '.entry-content', '.article-body',
+    '.markdown-body',
+    '.component-content', '.component-main', '.component-content-inner-wrapper',
+    '.designed-reader-component', '.FT-page-body', '.ft-page-body',
+    '[class*="FT-topic"]', '[class*="FT-content"]', '.FT-main-content',
+    '.page-inner', '.book-body',
+    '#main-content', '.wiki-content',
+    '.rst-content', '.md-content', '.wy-nav-content',
+    '.theme-doc-markdown', '.docMainContainer',
+    '.post-body', '.content', '#content', '#main', '.container article',
   ];
-  for (const phrase of TOOLBAR)
-    md = md.replace(new RegExp(`^[^\\n]*${phrase.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')}[^\\n]*$`,'gm'), '');
-  md = md.replace(/^[^\n]*(?:Add bookmark|Remove Bookmark)[^\n]*$/gm, '');
-  md = md.replace(/^[^\n]*\bLanguage\b[^\n]*\b(?:Open|Close)\b[^\n]*$/gm, '');
-  md = md.replace(/^\s*Close\s*$/gm, '');
-  md = md.replace(/(^#{1,6} .+)(\n+\1)+/gm, '$1');
-  md = md.replace(/\n{3,}/g, '\n\n').trim();
-  return md;
+  let main = doc.body;
+  for (const sel of PRIORITY) {
+    const el = doc.querySelector(sel);
+    if (el && el.innerText.trim().length > 200) { main = el; break; }
+  }
+
+  return postProcessMd(nodeToMd(main, baseUrl, imageMap));
 }
