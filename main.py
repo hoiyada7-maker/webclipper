@@ -1023,7 +1023,7 @@ async def extract_images_by_path(request: Request):
 async def list_output_files():
     """output/ 폴더의 .md 파일 목록 반환"""
     files = sorted(
-        [f.name for f in OUTPUT_DIR.glob("*.md") if not f.name.endswith("_extracted.md")],
+        [f.name for f in OUTPUT_DIR.glob("*.md")],
         reverse=True
     )
     return {"files": files}
@@ -1635,8 +1635,15 @@ async def _run_manual_extract(filename: str, regions: list, out_name: str):
                     try:
                         arr    = np.fromfile(region["img_path"], np.uint8)
                         img    = cv2.imdecode(arr, cv2.IMREAD_COLOR)[..., ::-1]
-                        x1, y1 = max(0, box["x"]), max(0, box["y"])
-                        x2, y2 = min(img.shape[1], box["x"] + box["w"]), min(img.shape[0], box["y"] + box["h"])
+                        if box.get("full"):
+                            x1, y1, x2, y2 = 0, 0, img.shape[1], img.shape[0]
+                        else:
+                            x1 = max(0, box["x"])
+                            y1 = max(0, box["y"])
+                            x2 = min(img.shape[1], box["x"] + box["w"])
+                            y2 = min(img.shape[0], box["y"] + box["h"])
+                        if x2 <= x1 or y2 <= y1:
+                            raise ValueError(f"빈 크롭 영역: box={box}, img={img.shape}")
                         crop   = img[y1:y2, x1:x2]
                         prefix = "txt" if region.get("orig_type") == "text" else "fig"
                         counter[0] += 1
