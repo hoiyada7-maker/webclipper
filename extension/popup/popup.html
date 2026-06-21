@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <title>Web Clipper</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <header>
+    <img src="../icons/icon48.png" alt="" width="24" height="24">
+    <span>Web Clipper</span>
+  </header>
+
+  <div class="options">
+    <label>
+      출력 모드
+      <select id="mode">
+        <option value="base64">Base64 임베드 (단일 .md)</option>
+        <option value="link">이미지 링크 (assets 폴더)</option>
+      </select>
+    </label>
+
+    <label class="row">
+      <input type="checkbox" id="auto-scroll">
+      <span>자동 스크롤 (무한스크롤 페이지)</span>
+    </label>
+
+    <label class="row">
+      <input type="checkbox" id="clean-content" checked>
+      <span>주요 콘텐츠만 추출</span>
+    </label>
+
+    <label class="row">
+      <input type="checkbox" id="spa-mode">
+      <span>SPA 대기 (JS 렌더링 페이지)</span>
+    </label>
+  </div>
+
+  <button id="clip-btn">📎 클립 시작</button>
+
+  <div id="log"></div>
+
+  <div class="footer-bar">
+    <div class="shortcut-hint">
+      단축키: <strong id="shortcut-display">Ctrl+Shift+U</strong>
+      <a href="#" id="shortcut-change">변경</a>
+    </div>
+    <button id="folder-btn" title="저장 폴더 열기">
+      <svg xmlns="http://www.w3.org/2000/svg" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+      </svg>
+    </button>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
