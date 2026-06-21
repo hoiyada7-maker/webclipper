@@ -1,0 +1,200 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      tag_name:
+        description: "Release tag to publish, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            args: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            args: --target aarch64-apple-darwin
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            args: --target x86_64-apple-darwin
+          - os: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            args: ""
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+
+    steps:
+      - name: checkout
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: compute changelog since previous tag
+        id: changelog
+        shell: bash
+        run: |
+          set -e
+          PREV_TAG=$(git tag --sort=-version:refname | grep -v "^${{ env.RELEASE_TAG }}$" | head -1 || true)
+          if [ -z "$PREV_TAG" ]; then
+            COMMITS="- first public release"
+            DIFF_URL=""
+          else
+            COMMITS=$(git log "$PREV_TAG..${{ env.RELEASE_TAG }}" --pretty=format:'- %s' --no-merges --reverse)
+            if [ -z "$COMMITS" ]; then
+              COMMITS="- (no commit changes since $PREV_TAG — version bump only)"
+            fi
+            DIFF_URL="full diff: https://github.com/${{ github.repository }}/compare/$PREV_TAG...${{ env.RELEASE_TAG }}"
+          fi
+          {
+            echo "COMMITS<<COMMITS_EOF"
+            echo "$COMMITS"
+            echo "COMMITS_EOF"
+            echo "DIFF_URL=$DIFF_URL"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: resolve release body
+        id: release_body
+        shell: bash
+        env:
+          COMMITS: ${{ steps.changelog.outputs.COMMITS }}
+          DIFF_URL: ${{ steps.changelog.outputs.DIFF_URL }}
+          TAG_NAME: ${{ env.RELEASE_TAG }}
+        run: |
+          set -e
+          NOTES_FILE="docs/release-notes/${TAG_NAME}.md"
+          {
+            echo "BODY<<BODY_EOF"
+            if [ -f "$NOTES_FILE" ]; then
+              cat "$NOTES_FILE"
+            else
+              printf '# %s\n\n' "$TAG_NAME"
+              printf '## What changed\n\n%s\n\n%s\n\n' "$COMMITS" "$DIFF_URL"
+              printf '## Install\n\n'
+              printf '**Windows** (OCR Studio 포함): `*_x64-setup.exe` 또는 `*_x64_en-US.msi`\n'
+              printf '**macOS Apple Silicon**: `*_aarch64.dmg`\n'
+              printf '**macOS Intel**: `*_intel.dmg`\n'
+              printf '**Linux**: `*.AppImage`, `*.deb`, `*.rpm` 중 선택\n\n'
+              printf '> OCR Studio는 Windows 전용입니다. macOS·Linux 버전에는 포함되지 않습니다.\n'
+            fi
+            echo "BODY_EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: setup bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: setup rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: cache cargo
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            src-tauri/target
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('src-tauri/Cargo.lock') }}
+          restore-keys: |
+            ${{ matrix.os }}-cargo-
+
+      - name: install linux build deps
+        if: matrix.os == 'ubuntu-22.04'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev \
+            patchelf \
+            libsoup-3.0-dev \
+            libjavascriptcoregtk-4.1-dev
+
+      - name: install dependencies
+        run: bun install
+
+      - name: build + release
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tagName: ${{ env.RELEASE_TAG }}
+          releaseName: "MD Toolbox ${{ env.RELEASE_TAG }}"
+          releaseBody: ${{ steps.release_body.outputs.BODY }}
+          releaseDraft: true
+          prerelease: false
+          args: ${{ matrix.args }}
+
+      - name: rename dmg → MD.Toolbox.dmg (apple silicon)
+        if: matrix.target == 'aarch64-apple-darwin' && success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases \
+            --jq '.[] | select(.tag_name == "${{ env.RELEASE_TAG }}") | .id' | head -1)
+          [ -z "$RELEASE_ID" ] && { echo "no release found — skipping rename"; exit 0; }
+          ASSET_ID=$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" \
+            --jq '.[] | select(.name | test("aarch64.*\\.dmg$")) | .id' | head -1)
+          if [ -n "$ASSET_ID" ]; then
+            EXISTING=$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" \
+              --jq '.[] | select(.name == "MD.Toolbox.dmg") | .id' | head -1)
+            [ -n "$EXISTING" ] && gh api "repos/${{ github.repository }}/releases/assets/$EXISTING" -X DELETE
+            gh api "repos/${{ github.repository }}/releases/assets/$ASSET_ID" -X PATCH -f name='MD.Toolbox.dmg'
+          fi
+
+      - name: rename dmg → MD.Toolbox_intel.dmg (intel)
+        if: matrix.target == 'x86_64-apple-darwin' && success()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -e
+          RELEASE_ID=$(gh api repos/${{ github.repository }}/releases \
+            --jq '.[] | select(.tag_name == "${{ env.RELEASE_TAG }}") | .id' | head -1)
+          [ -z "$RELEASE_ID" ] && { echo "no release found — skipping rename"; exit 0; }
+          ASSET_ID=$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" \
+            --jq '.[] | select(.name | test("x64.*\\.dmg$")) | .id' | head -1)
+          if [ -n "$ASSET_ID" ]; then
+            EXISTING=$(gh api "repos/${{ github.repository }}/releases/$RELEASE_ID/assets" \
+              --jq '.[] | select(.name == "MD.Toolbox_intel.dmg") | .id' | head -1)
+            [ -n "$EXISTING" ] && gh api "repos/${{ github.repository }}/releases/assets/$EXISTING" -X DELETE
+            gh api "repos/${{ github.repository }}/releases/assets/$ASSET_ID" -X PATCH -f name='MD.Toolbox_intel.dmg'
+          fi
+
+  publish-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag_name || github.ref_name }}
+    steps:
+      - name: publish draft release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "publishing draft release for ${{ env.RELEASE_TAG }}"
+          gh release edit "${{ env.RELEASE_TAG }}" \
+            --repo "${{ github.repository }}" \
+            --draft=false \
+            --latest

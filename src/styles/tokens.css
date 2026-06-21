@@ -1,0 +1,247 @@
+:root {
+  --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  --radius-sm: 6px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+
+  --titlebar-h: 48px;
+  --breadcrumb-h: 30px;
+  --statusbar-h: 28px;
+
+  --easing: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur-base: 200ms;
+}
+
+/* catppuccin latte (light) — solid by default */
+:root[data-theme="latte"],
+:root[data-theme="light"] {
+  --bg: #eff1f5;            /* base */
+  --bg-rgb: 239, 241, 245;
+  --fg: #4c4f69;            /* text */
+  --muted: #9ca0b0;         /* overlay0 */
+  --border: #ccd0da;        /* surface0 */
+  --accent: #fe640b;        /* peach */
+  --surface: #e6e9ef;       /* mantle */
+  --surface-hover: #bcc0cc; /* surface1 */
+  --shadow-soft: 0 1px 2px rgba(76, 79, 105, 0.06), 0 2px 8px rgba(76, 79, 105, 0.05);
+  color-scheme: light;
+}
+
+/* mono — plain black/white with neutral greys */
+:root[data-theme="mono"] {
+  --bg: #ffffff;
+  --bg-rgb: 255, 255, 255;
+  --fg: #111111;
+  --muted: #6f6f6f;
+  --border: #d9d9d9;
+  --accent: #111111;
+  --surface: #f5f5f5;
+  --surface-hover: #ececec;
+  --shadow-soft: 0 1px 2px rgba(17, 17, 17, 0.05), 0 2px 8px rgba(17, 17, 17, 0.04);
+  color-scheme: light;
+}
+
+/* mono dark — reverse mono for low-light writing */
+:root[data-theme="mono-dark"] {
+  --bg: #111111;
+  --bg-rgb: 17, 17, 17;
+  --fg: #f7f7f7;
+  --muted: #a3a3a3;
+  --border: #333333;
+  --accent: #ffffff;
+  --surface: #191919;
+  --surface-hover: #262626;
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.42), 0 2px 8px rgba(0, 0, 0, 0.3);
+  color-scheme: dark;
+}
+
+/* catppuccin frappé — soft cool dark, mauve signature (distinct from macchiato's peach) */
+:root[data-theme="frappe"] {
+  --bg: #303446;            /* base */
+  --bg-rgb: 48, 52, 70;
+  --fg: #c6d0f5;            /* text */
+  --muted: #737994;         /* overlay0 — official spec (was incorrectly overlay1) */
+  --border: #414559;        /* surface0 */
+  --accent: #ca9ee6;        /* mauve — distinct cool-purple */
+  --surface: #292c3c;       /* mantle */
+  --surface-hover: #51576d; /* surface1 */
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.3), 0 2px 8px rgba(0, 0, 0, 0.2);
+  color-scheme: dark;
+}
+
+/* catppuccin macchiato */
+:root[data-theme="macchiato"] {
+  --bg: #24273a;
+  --bg-rgb: 36, 39, 58;
+  --fg: #cad3f5;            /* text */
+  --muted: #6e738d;         /* overlay0 */
+  --border: #363a4f;        /* surface0 */
+  --accent: #f5a97f;        /* peach */
+  --surface: #1e2030;       /* mantle */
+  --surface-hover: #494d64; /* surface1 */
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.22);
+  color-scheme: dark;
+}
+
+/* matcha — washi paper + kelly green */
+:root[data-theme="matcha"] {
+  --bg: #f7f4e9;
+  --bg-rgb: 247, 244, 233;
+  --fg: #2d3624;
+  --muted: #8b9479;
+  --border: #dad6c4;
+  --accent: #7b9a4e;
+  --surface: #ede9d8;
+  --surface-hover: #e3dcc4;
+  --shadow-soft: 0 1px 2px rgba(45, 54, 36, 0.05), 0 2px 8px rgba(45, 54, 36, 0.04);
+  color-scheme: light;
+}
+
+/* catppuccin mocha */
+:root[data-theme="mocha"],
+:root[data-theme="dark"] {
+  --bg: #1e1e2e;
+  --bg-rgb: 30, 30, 46;
+  --fg: #cdd6f4;            /* text */
+  --muted: #6c7086;         /* overlay0 */
+  --border: #313244;        /* surface0 */
+  --accent: #fab387;        /* peach */
+  --surface: #181825;       /* mantle */
+  --surface-hover: #45475a; /* surface1 */
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.4), 0 2px 8px rgba(0, 0, 0, 0.25);
+  color-scheme: dark;
+}
+
+/* kanagawa — ink-wash dark (sumiInk + crystalBlue) */
+:root[data-theme="kanagawa"] {
+  --bg: #1f1f28;            /* sumiInk1 — wave base */
+  --bg-rgb: 31, 31, 40;
+  --fg: #dcd7ba;            /* fujiWhite — warm cream */
+  --muted: #727169;         /* fujiGray */
+  --border: #363646;        /* sumiInk3 — subtle divider */
+  --accent: #7e9cd8;        /* crystalBlue — iconic */
+  --surface: #2a2a37;       /* sumiInk2 */
+  --surface-hover: #363646; /* sumiInk3 */
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+  color-scheme: dark;
+}
+
+/* ayu mirage — warm dark, orange-red signature */
+:root[data-theme="ayu"] {
+  --bg: #1f2430;            /* common.bg */
+  --bg-rgb: 31, 36, 48;
+  --fg: #cbccc6;            /* common.fg */
+  --muted: #707a8c;         /* ui.fg — readable on dark bg */
+  --border: #33415e;        /* ui.line */
+  --accent: #ffa759;        /* common.accent — warm orange */
+  --surface: #191e2a;       /* editor.gutter */
+  --surface-hover: #2d3343; /* ui.selection.bg */
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+  color-scheme: dark;
+}
+
+/* rose pine — soho-vibes dark (base + rose) */
+:root[data-theme="rose-pine"] {
+  --bg: #191724;            /* base */
+  --bg-rgb: 25, 23, 36;
+  --fg: #e0def4;            /* text */
+  --muted: #6e6a86;         /* muted */
+  --border: #26233a;        /* overlay */
+  --accent: #ebbcba;        /* rose — signature pink */
+  --surface: #1f1d2e;       /* surface */
+  --surface-hover: #26233a; /* overlay */
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.45), 0 2px 8px rgba(0, 0, 0, 0.28);
+  color-scheme: dark;
+}
+
+/* claude-inspired — warm parchment + terracotta */
+:root[data-theme="claude"] {
+  --bg: #f5f4ed;
+  --bg-rgb: 245, 244, 237;
+  --fg: #2b2118;
+  --muted: #8a7a6a;
+  --border: #ded8cb;
+  --accent: #c96442;
+  --surface: #ebe6dc;
+  --surface-hover: #e0d8ca;
+  --shadow-soft: 0 1px 2px rgba(43, 33, 24, 0.06), 0 2px 8px rgba(43, 33, 24, 0.05);
+  color-scheme: light;
+}
+
+/* codex-inspired — openai black/white with a restrained green accent */
+:root[data-theme="codex"] {
+  --bg: #0f0f0f;
+  --bg-rgb: 15, 15, 15;
+  --fg: #f4f4f0;
+  --muted: #9a9a94;
+  --border: #2d2d2a;
+  --accent: #10a37f;
+  --surface: #171715;
+  --surface-hover: #242420;
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.48), 0 2px 8px rgba(0, 0, 0, 0.32);
+  color-scheme: dark;
+}
+
+/* gemini-inspired — blue/violet AI glow kept quiet for writing */
+:root[data-theme="gemini"] {
+  --bg: #f6f8ff;
+  --bg-rgb: 246, 248, 255;
+  --fg: #202124;
+  --muted: #7b8193;
+  --border: #d8def2;
+  --accent: #6f7ee8;
+  --surface: #eef2ff;
+  --surface-hover: #e2e8ff;
+  --shadow-soft: 0 1px 2px rgba(71, 150, 227, 0.08), 0 2px 10px rgba(145, 119, 199, 0.08);
+  color-scheme: light;
+}
+
+/* cursor-inspired — warm off-white and near-black editor neutrals */
+:root[data-theme="cursor"] {
+  --bg: #14120b;
+  --bg-rgb: 20, 18, 11;
+  --fg: #f7f7f4;
+  --muted: #a5a197;
+  --border: #363326;
+  --accent: #f7f7f4;
+  --surface: #1d1b13;
+  --surface-hover: #26251e;
+  --shadow-soft: 0 1px 2px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+  color-scheme: dark;
+}
+
+/* fallback when no data-theme yet (system check before JS) */
+:root:not([data-theme]) {
+  --bg: #eff1f5;
+  --bg-rgb: 239, 241, 245;
+  --fg: #4c4f69;
+  --muted: #9ca0b0;
+  --border: #ccd0da;
+  --accent: #fe640b;
+  --surface: #e6e9ef;
+  --surface-hover: #bcc0cc;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) {
+    --bg: #1e1e2e;
+    --bg-rgb: 30, 30, 46;
+    --fg: #cdd6f4;
+    --muted: #6c7086;
+    --border: #313244;
+    --accent: #fab387;
+    --surface: #181825;
+    --surface-hover: #45475a;
+    color-scheme: dark;
+  }
+}
+
+/* OPT-IN transparency. --user-opacity is set by theme.ts when slider < 100.
+   Default 0.74 if attribute is on but JS didn't set a value (rare race). */
+:root[data-transparency="on"] {
+  --bg: rgba(var(--bg-rgb), var(--user-opacity, 0.74));
+}

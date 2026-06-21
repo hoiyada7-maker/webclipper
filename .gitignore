@@ -29,3 +29,9 @@ server.pid
 
 # 잘못 생성된 파일
 ]
+
+# Tauri / Node
+node_modules
+dist
+src-tauri/target
+src-tauri/gen
