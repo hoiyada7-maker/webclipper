@@ -7,6 +7,10 @@
 <p align="center"><em>a desktop toolkit for markdown files — with a web clipper extension.</em></p>
 
 <p align="center">
+  <a href="./README.ko.md">한국어</a>
+</p>
+
+<p align="center">
   <a href="https://github.com/hoiyada7-maker/webclipper/releases/latest"><img src="https://img.shields.io/github/v/release/hoiyada7-maker/webclipper?style=flat-square&color=black&label=release" alt="release" /></a>
   <img src="https://img.shields.io/badge/Windows-10%2B-black?style=flat-square" alt="windows" />
   <img src="https://img.shields.io/badge/macOS-13%2B-black?style=flat-square" alt="macos" />
