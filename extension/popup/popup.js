@@ -57,6 +57,33 @@ document.addEventListener('DOMContentLoaded', async () => {
     logEl.scrollTop = logEl.scrollHeight;
   }
 
+  // ── Fluid Topics 감지 ──────────────────────────────────────
+  const ftSection = document.getElementById('ft-section');
+  const ftTitleEl = document.getElementById('ft-title');
+  const ftFullEl  = document.getElementById('ft-full-doc');
+  let ftInfo = null;
+  try {
+    const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    ftInfo = await detectFluidTopics(tab.id);
+  } catch { /* chrome:// 등 접근 불가 페이지 */ }
+  if (ftInfo?.isFT) {
+    ftSection.hidden = false;
+    if (ftInfo.mapId) {
+      ftTitleEl.textContent = `📚 Fluid Topics: ${ftInfo.title || '문서 감지됨'}` +
+        (ftInfo.verified ? '' : ' (추정)');
+    } else {
+      ftTitleEl.textContent =
+        '📚 Fluid Topics 사이트 — 문서를 인식하지 못했습니다. 페이지 새로고침(F5) 후 다시 열어주세요.';
+      ftFullEl.checked = false;
+      ftFullEl.disabled = true;
+    }
+  }
+
+  // 백그라운드 FT 클립 진행 로그 수신
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.type === 'FT_PROGRESS') log(msg.text, msg.level || 'info');
+  });
+
   clipBtn.addEventListener('click', async () => {
     clipBtn.disabled = true;
     logEl.innerHTML = '';
@@ -70,6 +97,23 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     try {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+
+      // Fluid Topics: fetch the whole document via khub API in the background
+      // (virtual-scroll readers only render visible topics — DOM clipping misses the rest)
+      if (!ftSection.hidden && ftFullEl.checked && ftInfo?.mapId) {
+        log('📚 Fluid Topics 전체 문서 클립 시작 (API)');
+        log('  팝업을 닫아도 백그라운드에서 계속 진행됩니다 (진행률: 아이콘 배지)');
+        const res = await chrome.runtime.sendMessage({
+          type: 'FT_CLIP',
+          tabId: tab.id,
+          origin: ftInfo.origin,
+          mapId: ftInfo.mapId,
+          opts: { mode: options.mode, cleanOnly: options.cleanOnly },
+        });
+        if (!res?.ok) throw new Error(res?.error || 'Fluid Topics 클립 실패');
+        log('✅ 완료!', 'success');
+        return;
+      }
 
       // Ensure content script is present (re-inject if page loaded before extension)
       await chrome.scripting.executeScript({
@@ -146,6 +190,61 @@ document.addEventListener('DOMContentLoaded', async () => {
 });
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+// Fluid Topics 판별: fluidtopics 스크립트 / ft-tenant-base-url 메타 태그 존재.
+// mapId 후보는 리더 URL(/r/{mapId}/...)과 페이지가 호출한 khub API 기록
+// (performance entries, 최신 우선)에서 수집한 뒤, 맵 조회 API의 readerUrl이
+// 현재 경로의 접두사인 후보를 채택해 검증한다 (pretty URL 리더는 URL에
+// mapId가 없어 기록만으로는 이전에 본 다른 문서를 오검출할 수 있음).
+async function detectFluidTopics(tabId) {
+  const [{ result }] = await chrome.scripting.executeScript({
+    target: { tabId },
+    func: async () => {
+      const ID = '([A-Za-z0-9~_-]{15,})';
+      const isFT = !!(
+        document.querySelector('script[src*="fluidtopics"]') ||
+        document.querySelector('meta[name="ft-tenant-base-url"]')
+      );
+      const candidates = [];
+      const urlId = (location.pathname.match(new RegExp(`/r/${ID}(?:[/?#]|$)`)) || [])[1];
+      if (urlId) candidates.push(urlId);
+      const seen = new Set(candidates);
+      const perfIds = [];
+      for (const e of performance.getEntriesByType('resource')) {
+        const m = e.name.match(new RegExp(`/api/khub/maps/${ID}(?:[/?]|$)`));
+        if (m && !seen.has(m[1])) { seen.add(m[1]); perfIds.push(m[1]); }
+      }
+      candidates.push(...perfIds.reverse()); // 최근 호출된 맵 먼저
+      if (!candidates.length) return { isFT, mapId: null, origin: location.origin };
+
+      const infos = [];
+      for (const id of candidates.slice(0, 5)) {
+        try {
+          const r = await fetch(`/api/khub/maps/${id}`, {
+            headers: { Accept: 'application/json' },
+          });
+          if (!r.ok) continue;
+          const map = await r.json();
+          infos.push({ id, title: map.title || '', readerUrl: map.readerUrl || '' });
+        } catch { /* ignore */ }
+      }
+      const byPath = infos.find(i => i.readerUrl && (
+        location.pathname === i.readerUrl ||
+        location.pathname.startsWith(i.readerUrl + '/')
+      ));
+      const pick = byPath || infos[0] ||
+        { id: candidates[0], title: '' };
+      return {
+        isFT: true, // khub API를 쓰는 페이지는 Fluid Topics
+        mapId: pick.id,
+        title: pick.title,
+        verified: !!byPath,
+        origin: location.origin,
+      };
+    },
+  });
+  return result || { isFT: false, mapId: null, origin: null };
+}
 
 function sendToTab(tabId, msg) {
   return new Promise((resolve, reject) => {

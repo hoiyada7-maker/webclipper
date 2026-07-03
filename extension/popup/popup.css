@@ -54,6 +54,16 @@ select {
   color: #1a1a1a;
 }
 
+.ft-section {
+  background: #eff6ff;
+  border-bottom: 1px solid #bfdbfe;
+}
+.ft-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #1d4ed8;
+}
+
 #clip-btn {
   display: block;
   width: calc(100% - 28px);

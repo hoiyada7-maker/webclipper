@@ -3,6 +3,10 @@
 if (!window._clipperInjected) {
   window._clipperInjected = true;
 
+  // FT 같은 SPA에서 mapId 감지에 쓰는 resource timing 기록이 기본 250개 버퍼를
+  // 넘으면 이후 API 호출 기록이 유실되므로 버퍼를 크게 늘린다.
+  try { performance.setResourceTimingBufferSize(50000); } catch (_) {}
+
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg.type === 'PING') {
       sendResponse({ ok: true });

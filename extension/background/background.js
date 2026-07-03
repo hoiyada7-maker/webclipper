@@ -14,6 +14,13 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
       .catch(() => sendResponse({ id: null }));
     return true;
   }
+
+  if (msg.type === 'FT_CLIP') {
+    ftClip(msg)
+      .then(() => sendResponse({ ok: true }))
+      .catch(err => sendResponse({ ok: false, error: err.message }));
+    return true;
+  }
 });
 
 // Starts a download and resolves only once it actually completes (or is interrupted).
@@ -120,6 +127,133 @@ chrome.commands.onCommand.addListener(async (command) => {
     setTimeout(() => setBadge('', ''), 5000);
   }
 });
+
+// ── Fluid Topics: full-document clip via khub REST API ───────────────────────
+// FT readers virtual-scroll: only visible topics are in the DOM, so DOM clipping
+// misses most of the document. The same content is served by the public API:
+//   GET /api/khub/maps/{mapId}          → document metadata (title)
+//   GET /api/khub/maps/{mapId}/toc      → topic tree (contentId, title, children)
+//   GET /api/khub/maps/{mapId}/topics/{contentId}/content → per-topic body HTML
+// Runs entirely in the service worker so it survives the popup closing.
+
+function ftReport(text, level = 'info') {
+  chrome.runtime.sendMessage({ type: 'FT_PROGRESS', text, level },
+    () => void chrome.runtime.lastError);
+}
+
+async function ftFetchJson(url) {
+  const res = await fetch(url, {
+    credentials: 'include', headers: { Accept: 'application/json' },
+  });
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${url}`);
+  return res.json();
+}
+
+async function ftFetchTopic(origin, mapId, contentId, retries = 3) {
+  const url = `${origin}/api/khub/maps/${mapId}/topics/${contentId}/content`;
+  for (let i = 0; i < retries; i++) {
+    try {
+      const res = await fetch(url, {
+        credentials: 'include', signal: AbortSignal.timeout(30000),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return await res.text();
+    } catch (e) {
+      if (i === retries - 1) return `<p><em>[fetch failed: ${e.message}]</em></p>`;
+      await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+    }
+  }
+}
+
+async function ftClip({ tabId, origin, mapId, opts }) {
+  setBadge('...', '#2563eb');
+  try {
+    const esc = s => String(s ?? '')
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    const docTitle = await ftFetchJson(`${origin}/api/khub/maps/${mapId}`)
+      .then(m => m.title).catch(() => '') || 'FluidTopics Document';
+
+    const toc = await ftFetchJson(`${origin}/api/khub/maps/${mapId}/toc`);
+    const flat = [];
+    (function walk(nodes, depth) {
+      for (const n of nodes || []) {
+        flat.push({ depth, contentId: n.contentId, title: n.title });
+        walk(n.children, depth + 1);
+      }
+    })(toc, 1);
+    if (!flat.length) throw new Error('TOC가 비어 있습니다');
+    ftReport(`📑 ${docTitle} — 토픽 ${flat.length}개 수집 시작`);
+
+    // Assemble one HTML doc: doc title as h1, topic titles as h(depth+1)
+    const sections = [`<h1>${esc(docTitle)}</h1>`];
+    let done = 0;
+    for (const t of flat) {
+      const body = t.contentId ? await ftFetchTopic(origin, mapId, t.contentId) : '';
+      const h = Math.min(t.depth + 1, 6);
+      sections.push(`<section><h${h}>${esc(t.title)}</h${h}>\n${body}</section>`);
+      done++;
+      if (done % 10 === 0 || done === flat.length)
+        setBadge(`${Math.round((done / flat.length) * 100)}%`, '#2563eb');
+      if (done % 50 === 0) ftReport(`⏳ 토픽 ${done}/${flat.length}`);
+      await new Promise(r => setTimeout(r, 30));
+    }
+
+    // <article> wrapper so the standard pickMain PRIORITY list selects the whole doc
+    const html = `<!DOCTYPE html><html><head><title>${esc(docTitle)}</title></head>` +
+      `<body><article>${sections.join('\n')}</article></body></html>`;
+    const baseUrl = `${origin}/`;
+
+    // Reuse the standard pipeline (image collection + MD build run in the tab —
+    // the service worker has no DOMParser)
+    const [{ result: imgUrls }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: extractImgUrlsInTab,
+      args: [html, baseUrl, opts.cleanOnly],
+    });
+    ftReport(`🖼️ 이미지 ${imgUrls.length}개 발견`);
+
+    const { runId, imgPrefix } = makeRunId(html);
+    const imageMap = {};
+    let imgIdx = 0;
+    for (const imgUrl of imgUrls) {
+      imgIdx++;
+      const raw = imgUrl.startsWith('data:')
+        ? imgUrl
+        : await fetchAsDataUrl(imgUrl).catch(() => null);
+      if (!raw) { imageMap[imgUrl] = imgUrl; continue; }
+      const srcMime = raw.match(/^data:image\/([^;]+);/)?.[1] || 'png';
+      const { dataUrl, ext } = await convertImage(raw, srcMime);
+      if (opts.mode === 'base64') {
+        imageMap[imgUrl] = dataUrl;
+      } else {
+        const name = `${imgPrefix}_img_${String(imgIdx).padStart(3, '0')}.${ext}`;
+        await dlPromise(dataUrl, `WebClips/assets/${name}`);
+        imageMap[imgUrl] = `assets/${name}`;
+      }
+      if (imgIdx % 20 === 0) ftReport(`🖼️ 이미지 ${imgIdx}/${imgUrls.length}`);
+    }
+
+    const [{ result: md }] = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: buildMdInTab,
+      args: [html, baseUrl, docTitle, Object.entries(imageMap), opts.cleanOnly],
+    });
+
+    const mdDataUrl = 'data:text/markdown;charset=utf-8,' + encodeURIComponent(md);
+    const dlId = await dlPromise(mdDataUrl, `WebClips/${runId}.md`);
+    chrome.storage.local.set({ lastClipDownloadId: dlId ?? null });
+    ftReport(`💾 WebClips/${runId}.md`, 'success');
+
+    setBadge('OK', '#15803d');
+    setTimeout(() => setBadge('', ''), 3000);
+  } catch (err) {
+    console.error('[WebClipper][FT]', err);
+    setBadge('ERR', '#b91c1c');
+    setTimeout(() => setBadge('', ''), 5000);
+    throw err;
+  }
+}
 
 function setBadge(text, color) {
   chrome.action.setBadgeText({ text });
