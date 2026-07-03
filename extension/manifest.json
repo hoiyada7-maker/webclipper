@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Web Clipper",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Clip web pages to self-contained Markdown files",
   "permissions": ["activeTab", "scripting", "downloads", "storage"],
   "host_permissions": ["<all_urls>"],
