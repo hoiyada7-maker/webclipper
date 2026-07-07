@@ -149,6 +149,8 @@ jobs:
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # linuxdeploy가 번들된 JRE의 ELF 바이너리를 strip하다 실패하므로 비활성화
+          NO_STRIP: true
         with:
           tagName: ${{ env.RELEASE_TAG }}
           releaseName: "MD Toolbox ${{ env.RELEASE_TAG }}"
