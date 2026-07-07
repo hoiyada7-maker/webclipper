@@ -33,7 +33,7 @@ jobs:
             runtime: mac-x64
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
-            args: ""
+            args: --verbose
             runtime: linux-x64
 
     runs-on: ${{ matrix.os }}
@@ -144,6 +144,12 @@ jobs:
         if: matrix.os != 'windows-latest'
         shell: bash
         run: bash scripts/fetch-runtime.sh ${{ matrix.runtime }}
+
+      - name: purge stale resources from cargo cache
+        # 이전 빌드가 target/에 복사해 둔 읽기 전용 JRE 파일이 캐시로 복원되면
+        # 재복사 시 Permission denied가 발생하므로 빌드 전에 제거
+        shell: bash
+        run: rm -rf src-tauri/target/release/resources src-tauri/target/*/release/resources
 
       - name: build + release
         uses: tauri-apps/tauri-action@v0

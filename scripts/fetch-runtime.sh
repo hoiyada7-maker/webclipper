@@ -91,7 +91,11 @@ else
   JRE_SOURCE_ROOT="$(dirname "$(dirname "$JAVA_FILE")")"
 
   rm -rf "$JRE_DIR"
-  cp -R "$JRE_SOURCE_ROOT" "$JRE_DIR"
+  # -L: 심볼릭 링크를 실제 파일로 복사 (JRE 내 symlink가 AppImage 번들링을 깨뜨림)
+  cp -RL "$JRE_SOURCE_ROOT" "$JRE_DIR"
+  # 읽기 전용 파일(legal/ 등)이 target/으로 복사된 뒤 캐시 복원 시
+  # 덮어쓰기 실패(Permission denied)를 일으키므로 쓰기 권한 부여
+  chmod -R u+w "$JRE_DIR"
   chmod +x "$JRE_DIR/bin/$JAVA_BIN_NAME"
   echo "[fetch-runtime] placed JRE: $JRE_DIR"
   rm -rf "$TMP_DIR"
