@@ -47,6 +47,14 @@ jobs:
             windows-cargo-check-
             windows-cargo-
 
+      - name: placeholder resources dir
+        # tauri.conf.json declares bundle.resources: ["resources/"], so the
+        # tauri-build script requires this directory to exist even for
+        # `cargo check`. The real JAR/JRE are only fetched for actual builds
+        # (see scripts/fetch-runtime.ps1); an empty dir is enough here.
+        shell: pwsh
+        run: New-Item -ItemType Directory -Force -Path src-tauri/resources | Out-Null
+
       - name: cargo check
         working-directory: src-tauri
         run: cargo check --release

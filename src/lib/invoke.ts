@@ -89,6 +89,21 @@ export function cmdIsOcrAvailable(): Promise<boolean> {
   return invoke<boolean>("is_ocr_available");
 }
 
+// ── PDF → Markdown ────────────────────────────────────────────────────────────
+
+export interface PdfResult {
+  md_path: string;
+  elapsed_ms: number;
+}
+
+export function cmdIsPdfAvailable(): Promise<boolean> {
+  return invoke<boolean>("is_pdf_available");
+}
+
+export function cmdConvertPdf(pdfPath: string, outDir?: string): Promise<PdfResult> {
+  return invoke<PdfResult>("convert_pdf", { pdfPath, outDir: outDir ?? null });
+}
+
 // ── OCR Studio (Phase A) ──────────────────────────────────────────────────────
 
 export interface RegionBox {

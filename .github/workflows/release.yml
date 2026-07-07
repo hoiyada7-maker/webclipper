@@ -22,15 +22,19 @@ jobs:
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             args: ""
+            runtime: windows-x64
           - os: macos-latest
             target: aarch64-apple-darwin
             args: --target aarch64-apple-darwin
+            runtime: mac-aarch64
           - os: macos-latest
             target: x86_64-apple-darwin
             args: --target x86_64-apple-darwin
+            runtime: mac-x64
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             args: ""
+            runtime: linux-x64
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -130,6 +134,16 @@ jobs:
 
       - name: install dependencies
         run: bun install
+
+      - name: fetch PDF runtime (JAR + JRE)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: pwsh scripts/fetch-runtime.ps1 ${{ matrix.runtime }}
+
+      - name: fetch PDF runtime (JAR + JRE)
+        if: matrix.os != 'windows-latest'
+        shell: bash
+        run: bash scripts/fetch-runtime.sh ${{ matrix.runtime }}
 
       - name: build + release
         uses: tauri-apps/tauri-action@v0

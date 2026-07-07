@@ -4,6 +4,7 @@ secrets.json
 # 출력/캐시
 output/
 .docs/
+.temp/
 __pycache__/
 *.pyc
 *.pyo
@@ -36,3 +37,4 @@ dist
 src-tauri/target
 src-tauri/gen
 src-tauri/.cargo
+src-tauri/resources/
