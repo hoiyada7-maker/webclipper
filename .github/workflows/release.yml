@@ -157,6 +157,12 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # linuxdeploy가 번들된 JRE의 ELF 바이너리를 strip하다 실패하므로 비활성화
           NO_STRIP: true
+          # linuxdeploy는 JRE 내부 $ORIGIN RPATH를 해석하지 못해 libjvm.so를 찾지
+          # 못하므로 JRE lib 경로를 라이브러리 검색 경로에 추가 (linux 전용)
+          LD_LIBRARY_PATH: >-
+            ${{ matrix.os == 'ubuntu-22.04'
+              && format('{0}/src-tauri/resources/jre/lib:{0}/src-tauri/resources/jre/lib/server', github.workspace)
+              || '' }}
         with:
           tagName: ${{ env.RELEASE_TAG }}
           releaseName: "MD Toolbox ${{ env.RELEASE_TAG }}"

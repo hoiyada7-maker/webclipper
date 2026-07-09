@@ -39,7 +39,8 @@ if (Test-Path $JarPath) {
         $zipUrl = "https://github.com/opendataloader-project/opendataloader-pdf/releases/download/v$CliVersion/opendataloader-pdf-cli-$CliVersion.zip"
         $zipPath = Join-Path $tmpDir "cli.zip"
         Write-Host "[fetch-runtime] downloading CLI jar: $zipUrl"
-        Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath
+        # GitHub releases가 간헐적으로 504를 반환하므로 재시도
+        Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -MaximumRetryCount 5 -RetryIntervalSec 10
 
         $extractDir = Join-Path $tmpDir "extracted"
         Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
@@ -64,7 +65,7 @@ if (Test-Path $JavaBinPath) {
     try {
         $archivePath = Join-Path $tmpDir $(if ($isZip) { "jre.zip" } else { "jre.tar.gz" })
         Write-Host "[fetch-runtime] downloading JRE ($Platform): $jreUrl"
-        Invoke-WebRequest -Uri $jreUrl -OutFile $archivePath
+        Invoke-WebRequest -Uri $jreUrl -OutFile $archivePath -MaximumRetryCount 5 -RetryIntervalSec 10
 
         $extractDir = Join-Path $tmpDir "extracted"
         New-Item -ItemType Directory -Force -Path $extractDir | Out-Null

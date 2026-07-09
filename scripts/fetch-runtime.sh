@@ -31,7 +31,8 @@ else
   trap 'rm -rf "$TMP_DIR"' EXIT
   ZIP_URL="https://github.com/opendataloader-project/opendataloader-pdf/releases/download/v${CLI_VERSION}/opendataloader-pdf-cli-${CLI_VERSION}.zip"
   echo "[fetch-runtime] downloading CLI jar: $ZIP_URL"
-  curl -sL -o "$TMP_DIR/cli.zip" "$ZIP_URL"
+  # -f: HTTP 에러 시 실패 처리, --retry: GitHub releases의 간헐적 504 대비
+  curl -fsSL --retry 5 --retry-all-errors -o "$TMP_DIR/cli.zip" "$ZIP_URL"
   unzip -q "$TMP_DIR/cli.zip" -d "$TMP_DIR/extracted"
   JAR_FILE="$(find "$TMP_DIR/extracted" -name 'opendataloader-pdf-cli-*.jar' | head -1)"
   if [ -z "$JAR_FILE" ]; then
@@ -74,10 +75,10 @@ else
   EXTRACT_DIR="$TMP_DIR/extracted"
   mkdir -p "$EXTRACT_DIR"
   if [ "$ADOPTIUM_OS" = "windows" ]; then
-    curl -sL -o "$TMP_DIR/jre.zip" "$JRE_URL"
+    curl -fsSL --retry 5 --retry-all-errors -o "$TMP_DIR/jre.zip" "$JRE_URL"
     unzip -q "$TMP_DIR/jre.zip" -d "$EXTRACT_DIR"
   else
-    curl -sL -o "$TMP_DIR/jre.tar.gz" "$JRE_URL"
+    curl -fsSL --retry 5 --retry-all-errors -o "$TMP_DIR/jre.tar.gz" "$JRE_URL"
     tar -xzf "$TMP_DIR/jre.tar.gz" -C "$EXTRACT_DIR"
   fi
 
