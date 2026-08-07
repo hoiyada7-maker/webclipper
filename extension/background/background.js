@@ -16,10 +16,14 @@ chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
   }
 
   if (msg.type === 'FT_CLIP') {
-    ftClip(msg)
-      .then(() => sendResponse({ ok: true }))
-      .catch(err => sendResponse({ ok: false, error: err.message }));
-    return true;
+    // 긴 작업(수백 토픽 fetch + 이미지 + 대용량 MD 변환) 동안 MV3 서비스워커의
+    // 단일 응답 채널이 끊기면, 실제로 성공해도 팝업이 '실패'로 오인한다.
+    // 시작만 즉시 응답하고 진행·완료·실패는 FT_PROGRESS로 보고한다
+    // (팝업을 닫아도 백그라운드에서 계속 진행되는 기존 설계와도 일치).
+    sendResponse({ ok: true, started: true });
+    ftClip(msg).catch(err =>
+      ftReport('❌ Fluid Topics 클립 실패: ' + (err?.message || String(err)), 'error'));
+    return false;
   }
 });
 
@@ -244,6 +248,7 @@ async function ftClip({ tabId, origin, mapId, opts }) {
     const dlId = await dlPromise(mdDataUrl, `WebClips/${runId}.md`);
     chrome.storage.local.set({ lastClipDownloadId: dlId ?? null });
     ftReport(`💾 WebClips/${runId}.md`, 'success');
+    ftReport('✅ 완료!', 'success');
 
     setBadge('OK', '#15803d');
     setTimeout(() => setBadge('', ''), 3000);

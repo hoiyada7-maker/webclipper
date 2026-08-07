@@ -102,7 +102,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       // (virtual-scroll readers only render visible topics — DOM clipping misses the rest)
       if (!ftSection.hidden && ftFullEl.checked && ftInfo?.mapId) {
         log('📚 Fluid Topics 전체 문서 클립 시작 (API)');
-        log('  팝업을 닫아도 백그라운드에서 계속 진행됩니다 (진행률: 아이콘 배지)');
+        log('  진행률·완료 여부는 아래 로그와 아이콘 배지로 표시됩니다');
+        log('  (팝업을 닫아도 백그라운드에서 계속 진행됩니다)');
         const res = await chrome.runtime.sendMessage({
           type: 'FT_CLIP',
           tabId: tab.id,
@@ -110,8 +111,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           mapId: ftInfo.mapId,
           opts: { mode: options.mode, cleanOnly: options.cleanOnly },
         });
-        if (!res?.ok) throw new Error(res?.error || 'Fluid Topics 클립 실패');
-        log('✅ 완료!', 'success');
+        // 완료/실패는 FT_PROGRESS 로그(💾 ✅ / ❌)로 보고된다. 여기서는 시작 접수만 확인.
+        if (!res?.started) throw new Error(res?.error || 'Fluid Topics 클립을 시작하지 못했습니다');
         return;
       }
 
