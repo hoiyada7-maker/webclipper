@@ -19,12 +19,13 @@ if (!window._clipperInjected) {
     }
 
     if (msg.type === 'EXTRACT_HTML') {
-      waitForContent(msg.waitMs ?? 0).then(() => {
-        sendResponse({
-          html: extractHtml(),
-          url: location.href,
-          title: document.title,
-        });
+      waitForContent(msg.waitMs ?? 0).then(async () => {
+        // Claude.ai 등 가상화 채팅은 화면 근처의 일부 메시지만 DOM에 렌더링되어
+        // 단일 스냅샷으론 위쪽(이전) 메시지가 빠진다. 스크롤 훑기로 전체를 수집한다.
+        const html = isVirtualizedChat()
+          ? await extractChatTranscript()
+          : extractHtml();
+        sendResponse({ html, url: location.href, title: document.title });
       });
       return true; // async
     }
@@ -145,6 +146,86 @@ function extractHtml() {
 
   // Full page fallback — always use serializeDeep to capture any shadow DOM
   return wrap(serializeDeep(document.body));
+}
+
+// ── 가상화 채팅 캡처 (Claude.ai 등) ──────────────────────────────────────────
+// transcript-list/transcript-row 테스트 ID를 쓰는 채팅 UI는 전체 대화를 가상화해서
+// 화면 근처의 몇 개 메시지만 DOM에 렌더링한다. extractHtml의 단일 스냅샷으로는
+// 위쪽(이전) 메시지가 빠지므로, 스크롤을 위→아래로 훑으며 새로 나타나는
+// transcript-row를 data-index 순번으로 중복 없이 누적해 전체를 모은다.
+function isVirtualizedChat() {
+  return !!(document.querySelector('[data-testid="transcript-list"]') ||
+            document.querySelector('[data-testid="transcript-row"]'));
+}
+
+async function extractChatTranscript() {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // 스크롤 컨테이너: transcript-list에서 위로 올라가며 scrollable한 첫 조상을 찾는다.
+  const list = document.querySelector('[data-testid="transcript-list"]');
+  let sc = list;
+  while (sc && sc.scrollHeight <= sc.clientHeight + 50) sc = sc.parentElement;
+  if (!sc) {
+    sc = Array.from(document.querySelectorAll('*'))
+      .filter(e => e.scrollHeight > e.clientHeight + 300)
+      .sort((a, b) => b.scrollHeight - a.scrollHeight)[0];
+  }
+
+  // transcript-row 하나 = 메시지 하나. 유저는 user-message 테스트 ID,
+  // 어시스턴트는 font-claude-response 클래스로 구분한다.
+  const rowHtml = row => {
+    const user = row.querySelector('[data-testid="user-message"]');
+    if (user) return user.outerHTML;
+    const asst = row.querySelector('.font-claude-response');
+    if (asst) return `<div class="claude-assistant-message">${asst.outerHTML}</div>`;
+    return null;
+  };
+
+  const seen = new Set();
+  const parts = [];
+  const collect = () => {
+    for (const row of document.querySelectorAll('[data-testid="transcript-row"]')) {
+      // data-index(react-virtuoso 순번)는 전체 대화에서 안정적·고유하므로 dedup 키로 쓴다.
+      const key = row.getAttribute('data-index') ?? row.getAttribute('data-rs-index')
+        ?? (row.innerText || '').slice(0, 80);
+      if (seen.has(key)) continue;
+      const html = rowHtml(row);
+      if (!html) continue;
+      seen.add(key);
+      parts.push(html);
+    }
+  };
+
+  if (sc) {
+    sc.scrollTop = 0;
+    await sleep(400);
+    let stable = 0;
+    for (let i = 0; i < 600 && stable < 3; i++) {
+      const before = parts.length;
+      collect();
+      const atBottom = sc.scrollTop + sc.clientHeight >= sc.scrollHeight - 2;
+      if (!atBottom) {
+        sc.scrollTop += Math.floor(sc.clientHeight * 0.8);
+      } else if (parts.length === before) {
+        stable++;
+      } else {
+        stable = 0;
+      }
+      await sleep(300);
+    }
+    // 맨 아래 정확히 정렬한 뒤 남은 행까지 수집
+    sc.scrollTop = sc.scrollHeight;
+    await sleep(400);
+    collect();
+  } else {
+    collect(); // 짧은 대화: 스크롤 없이 현재 DOM의 모든 행을 수집
+  }
+
+  if (!parts.length) return extractHtml();
+
+  const wrap = (body) =>
+    `<!DOCTYPE html><html><head><title>${document.title}</title></head><body>${body}</body></html>`;
+  return wrap(`<article>${parts.join('\n')}</article>`);
 }
 
 // Recursively serializes an element including its shadow DOM content.
