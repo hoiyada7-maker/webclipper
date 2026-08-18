@@ -327,11 +327,19 @@ function collectImageUrls(doc, baseUrl) {
     try { return new URL(u, baseUrl).href; } catch { return null; }
   };
   for (const img of doc.querySelectorAll('img')) {
+    if (isDecorativeMathImg(img)) continue;
     const src = img.getAttribute('data-lazy-src') || img.getAttribute('data-lazy') || img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('src') || '';
     const r = resolve(src);
     if (r) urls.add(r);
   }
   return [...urls];
+}
+
+// KaTeX는 늘어나는 화살표(\xrightarrow 등)를 width="400em"짜리 data: SVG 조각으로
+// 그린다. 화면에선 CSS로 잘려 보이지만 마크다운으로 옮기면 깨진 이미지가 되므로
+// 다운로드·본문 삽입 모두에서 제외한다.
+function isDecorativeMathImg(img) {
+  return !!img.closest('.katex, .katex-html, .math-block, mjx-container');
 }
 
 // makeRunId: md파일명 "yyyy-mm-dd HHmmss 첫텍스트30자" + 이미지용 "yyyy-mm-dd_HHmmss"
@@ -457,8 +465,18 @@ function nodeToMd(node, base, imageMap) {
 
   const tag = node.tagName.toLowerCase();
 
-  if (['script','style','noscript','template','select','option','textarea','button','form'].includes(tag))
+  if (['script','style','noscript','template','select','option','textarea','form'].includes(tag))
     return '';
+
+  // <button>은 UI 요소라 텍스트는 버리지만, 본문 이미지를 클릭 가능한 버튼으로
+  // 감싸는 사이트(Gemini의 button.image-button 등)가 있어 그 안의 이미지는 살린다.
+  // aria-hidden="true"인 이미지는 아이콘 등 장식용이므로 제외한다.
+  if (tag === 'button') {
+    return Array.from(node.querySelectorAll('img'))
+      .filter(im => im.getAttribute('aria-hidden') !== 'true')
+      .map(im => nodeToMd(im, base, imageMap))
+      .join('');
+  }
 
   const kids = () => Array.from(node.childNodes).map(n => nodeToMd(n, base, imageMap)).join('');
 
@@ -517,6 +535,7 @@ function nodeToMd(node, base, imageMap) {
     }
 
     case 'img': {
+      if (isDecorativeMathImg(node)) return '';
       const raw = node.getAttribute('data-lazy-src') || node.getAttribute('data-lazy') || node.getAttribute('data-src') || node.getAttribute('data-original') || node.getAttribute('src') || '';
       if (!raw) return '';
       const resolved = resolveUrl(raw, base);

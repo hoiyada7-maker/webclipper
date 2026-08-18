@@ -414,6 +414,8 @@ function extractImgUrlsInTab(html, baseUrl, cleanOnly) {
   }
   const urls = new Set();
   for (const img of doc.querySelectorAll('img')) {
+    // KaTeX 화살표용 width="400em" data: SVG는 장식용이라 받지 않는다.
+    if (img.closest('.katex, .katex-html, .math-block, mjx-container')) continue;
     const src = img.getAttribute('data-lazy-src') || img.getAttribute('data-lazy') || img.getAttribute('data-src') || img.getAttribute('data-original') || img.getAttribute('src') || '';
     if (!src) continue;
     if (src.startsWith('data:image/')) { urls.add(src); continue; }
@@ -454,8 +456,17 @@ function buildMdInTab(html, baseUrl, title, imageMapEntries, cleanOnly) {
       return node.textContent.replace(/[\r\n]+/g, ' ').replace(/ {2,}/g, ' ');
     if (node.nodeType !== Node.ELEMENT_NODE) return '';
     const tag = node.tagName.toLowerCase();
-    if (['script','style','noscript','template','select','option','textarea','button','form'].includes(tag))
+    if (['script','style','noscript','template','select','option','textarea','form'].includes(tag))
       return '';
+    // <button>은 UI 요소라 텍스트는 버리지만, 본문 이미지를 클릭 가능한 버튼으로
+    // 감싸는 사이트(Gemini의 button.image-button 등)가 있어 그 안의 이미지는 살린다.
+    // aria-hidden="true"인 이미지는 아이콘 등 장식용이므로 제외한다.
+    if (tag === 'button') {
+      return Array.from(node.querySelectorAll('img'))
+        .filter(im => im.getAttribute('aria-hidden') !== 'true')
+        .map(im => nodeToMd(im, base, imap))
+        .join('');
+    }
     const kids = () => Array.from(node.childNodes).map(n => nodeToMd(n, base, imap)).join('');
     switch (tag) {
       case 'h1': return `\n\n# ${kids().trim()}\n\n`;
@@ -503,6 +514,8 @@ function buildMdInTab(html, baseUrl, title, imageMapEntries, cleanOnly) {
         return `[${t}](${href})`;
       }
       case 'img': {
+        // KaTeX 화살표용 width="400em" data: SVG는 장식용이라 본문에 넣지 않는다.
+        if (node.closest('.katex, .katex-html, .math-block, mjx-container')) return '';
         const raw = node.getAttribute('data-lazy-src') || node.getAttribute('data-lazy') || node.getAttribute('data-src') || node.getAttribute('data-original') || node.getAttribute('src') || '';
         if (!raw) return '';
         const resolved = resolveUrl(raw, base);
