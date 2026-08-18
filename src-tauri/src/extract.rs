@@ -125,13 +125,70 @@ fn encode_spaces(name: &str) -> String {
 fn parse_data_uri(uri: &str) -> Option<(String, &str)> {
     let after = uri.strip_prefix("data:image/")?;
     let semi = after.find(';')?;
-    let raw_ext = &after[..semi];
-    let ext = if raw_ext == "jpeg" {
-        "jpg".to_string()
-    } else {
-        raw_ext.to_string()
-    };
+    let ext = subtype_to_ext(&after[..semi]);
     let rest = &after[semi + 1..];
     let payload = rest.strip_prefix("base64,")?;
     Some((ext, payload))
+}
+
+/// data URI 서브타입 → 파일 확장자. `svg+xml`, `x-icon`처럼 확장자로 쓸 수 없는
+/// 서브타입을 그대로 파일명에 붙이면 이미지로 인식되지 않아 프리뷰에서 깨진다.
+fn subtype_to_ext(subtype: &str) -> String {
+    match subtype {
+        "jpeg" => return "jpg".to_string(),
+        "svg+xml" => return "svg".to_string(),
+        "x-icon" | "vnd.microsoft.icon" => return "ico".to_string(),
+        _ => {}
+    }
+    // 그 밖의 서브타입은 접미사(`+xml` 등)를 떼고 영숫자만 남긴다.
+    let base: String = subtype
+        .split('+')
+        .next()
+        .unwrap_or("")
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect();
+    if base.is_empty() {
+        "png".to_string()
+    } else {
+        base
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn subtype_normalized() {
+        assert_eq!(subtype_to_ext("png"), "png");
+        assert_eq!(subtype_to_ext("jpeg"), "jpg");
+        assert_eq!(subtype_to_ext("svg+xml"), "svg");
+        assert_eq!(subtype_to_ext("x-icon"), "ico");
+        assert_eq!(subtype_to_ext("vnd.microsoft.icon"), "ico");
+        assert_eq!(subtype_to_ext("webp"), "webp");
+        assert_eq!(subtype_to_ext("*"), "png");
+    }
+
+    #[test]
+    fn data_uri_ext_and_payload() {
+        assert_eq!(
+            parse_data_uri("data:image/svg+xml;base64,QUJD"),
+            Some(("svg".to_string(), "QUJD"))
+        );
+        assert_eq!(parse_data_uri("data:image/png,QUJD"), None);
+    }
+
+    #[test]
+    fn spaces_encoded_korean_kept() {
+        assert_eq!(encode_spaces("a b.png"), "a%20b.png");
+        assert_eq!(encode_spaces("사진 1.png"), "사진%201.png");
+        assert_eq!(encode_spaces("plain.png"), "plain.png");
+    }
+
+    #[test]
+    fn encode_decode_round_trip() {
+        let name = "2026-08-18 185122 PLC 약어 - Google Ge_img_001.png";
+        assert_eq!(crate::utils::percent_decode(&encode_spaces(name)), name);
+    }
 }
