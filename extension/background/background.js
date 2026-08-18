@@ -102,7 +102,7 @@ chrome.commands.onCommand.addListener(async (command) => {
         : await fetchAsDataUrl(imgUrl).catch(() => null);
       if (!raw) { imageMap[imgUrl] = imgUrl; continue; }
       const srcMime = raw.match(/^data:image\/([^;]+);/)?.[1] || 'png';
-      const { dataUrl, ext } = await convertImage(raw, srcMime);
+      const { dataUrl, ext } = await convertImage(raw, srcMime, tab.id);
       if (opts.mode === 'base64') {
         imageMap[imgUrl] = dataUrl;
       } else {
@@ -227,7 +227,7 @@ async function ftClip({ tabId, origin, mapId, opts }) {
         : await fetchAsDataUrl(imgUrl).catch(() => null);
       if (!raw) { imageMap[imgUrl] = imgUrl; continue; }
       const srcMime = raw.match(/^data:image\/([^;]+);/)?.[1] || 'png';
-      const { dataUrl, ext } = await convertImage(raw, srcMime);
+      const { dataUrl, ext } = await convertImage(raw, srcMime, tabId);
       if (opts.mode === 'base64') {
         imageMap[imgUrl] = dataUrl;
       } else {
@@ -353,12 +353,21 @@ async function blobToDataUrl(blob) {
   return `data:${blob.type || 'image/jpeg'};base64,${btoa(binary)}`;
 }
 
-// Converts WebP/AVIF/etc. → PNG via OffscreenCanvas; JPEG/PNG/GIF/SVG kept as-is.
-async function convertImage(dataUrl, mime) {
-  if (mime === 'png')     return { dataUrl, ext: 'png' };
-  if (mime === 'jpeg')    return { dataUrl, ext: 'jpg' };
-  if (mime === 'gif')     return { dataUrl, ext: 'gif' };
-  if (mime === 'svg+xml') return { dataUrl, ext: 'svg' };
+// Converts SVG/WebP/AVIF/etc. → PNG; JPEG/PNG/GIF kept as-is.
+// SVG까지 PNG로 바꾸는 이유: 마크다운 렌더러(markdown-it — VS Code 프리뷰·GitHub)가
+// XSS 방어로 data:image/svg+xml을 차단해서, Base64 임베드하면 프리뷰에 안 보인다.
+async function convertImage(dataUrl, mime, tabId) {
+  if (mime === 'png')  return { dataUrl, ext: 'png' };
+  if (mime === 'jpeg') return { dataUrl, ext: 'jpg' };
+  if (mime === 'gif')  return { dataUrl, ext: 'gif' };
+  if (mime === 'svg+xml') {
+    // 서비스워커의 createImageBitmap은 SVG를 디코드하지 못한다(InvalidStateError).
+    // Image+canvas가 있는 탭 문서 컨텍스트에 주입해 처리하고, 실패하면 원본을 쓴다.
+    const png = tabId == null ? null : await chrome.scripting.executeScript({
+      target: { tabId }, func: svgToPngInTab, args: [dataUrl],
+    }).then(r => r?.[0]?.result ?? null).catch(() => null);
+    return png ? { dataUrl: png, ext: 'png' } : { dataUrl, ext: 'svg' };
+  }
   try {
     const blob = await (await fetch(dataUrl)).blob();
     const bmp  = await createImageBitmap(blob);
@@ -369,6 +378,41 @@ async function convertImage(dataUrl, mime) {
   } catch {
     return { dataUrl, ext: 'png' };
   }
+}
+
+// 탭에 주입되어 실행된다 — SVG data URI를 PNG data URI로 래스터화한다.
+// width/height 없이 viewBox만 있는 SVG는 Canvas가 기본값 150x150으로 그리므로
+// viewBox의 크기를 명시해 원래 해상도를 유지한다.
+function svgToPngInTab(dataUrl) {
+  return new Promise(resolve => {
+    let src = dataUrl;
+    try {
+      const cut  = dataUrl.indexOf(',');
+      const isB64 = dataUrl.slice(0, cut).includes(';base64');
+      let text = isB64 ? atob(dataUrl.slice(cut + 1))
+                       : decodeURIComponent(dataUrl.slice(cut + 1));
+      if (!/<svg[^>]*\swidth=/i.test(text)) {
+        const vb = (text.match(/viewBox="([^"]+)"/i)?.[1] || '').trim().split(/[\s,]+/);
+        if (vb.length === 4) {
+          text = text.replace(/<svg/i, `<svg width="${vb[2]}" height="${vb[3]}"`);
+          src = 'data:image/svg+xml;base64,' +
+            btoa(isB64 ? text : unescape(encodeURIComponent(text)));
+        }
+      }
+    } catch (_) {}
+    const img = new Image();
+    img.onload = () => {
+      try {
+        const c = document.createElement('canvas');
+        c.width  = img.naturalWidth  || 1;
+        c.height = img.naturalHeight || 1;
+        c.getContext('2d').drawImage(img, 0, 0);
+        resolve(c.toDataURL('image/png'));
+      } catch (_) { resolve(null); }
+    };
+    img.onerror = () => resolve(null);
+    img.src = src;
+  });
 }
 
 function makeRunId(html) {

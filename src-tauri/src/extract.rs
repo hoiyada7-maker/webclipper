@@ -64,12 +64,12 @@ pub fn extract_images(md_path: String, out_dir: Option<String>) -> Result<Extrac
                 let img_path = assets_dir.join(&img_name);
                 // 동일 파일명 존재 시 건너뜀
                 if img_path.exists() {
-                    return Some(format!("![{alt}](./assets/{img_name})"));
+                    return Some(format!("![{alt}](./assets/{})", encode_spaces(&img_name)));
                 }
                 std::fs::write(&img_path, &raw).ok()?;
                 saved_files.push(img_name.clone());
                 img_count += 1;
-                Some(format!("![{alt}](./assets/{img_name})"))
+                Some(format!("![{alt}](./assets/{})", encode_spaces(&img_name)))
             });
             result.push_str(replaced.as_deref().unwrap_or(full.as_str()));
         } else if !src.starts_with("http://") && !src.starts_with("https://") && !src.starts_with("data:") {
@@ -88,7 +88,7 @@ pub fn extract_images(md_path: String, out_dir: Option<String>) -> Result<Extrac
                         saved_files.push(file_name.clone());
                         img_count += 1;
                     }
-                    result.push_str(&format!("![{alt}](./assets/{file_name})"));
+                    result.push_str(&format!("![{alt}](./assets/{})", encode_spaces(&file_name)));
                 } else {
                     result.push_str(full.as_str());
                 }
@@ -114,6 +114,12 @@ pub fn extract_images(md_path: String, out_dir: Option<String>) -> Result<Extrac
         img_count,
         saved_files,
     })
+}
+
+/// 마크다운 링크 목적지는 공백에서 끊긴다 — 파일명의 공백을 %20으로 인코딩한다.
+/// 읽는 쪽(`utils::percent_decode`, embed.rs)이 %20을 다시 공백으로 되돌린다.
+fn encode_spaces(name: &str) -> String {
+    name.replace(' ', "%20")
 }
 
 fn parse_data_uri(uri: &str) -> Option<(String, &str)> {

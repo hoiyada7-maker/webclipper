@@ -362,12 +362,14 @@ function makeRunId(html) {
   return { runId, imgPrefix: `${date}_${time}` };
 }
 
-// convertImage: keeps JPEG/PNG/GIF/SVG as-is; converts WebP/AVIF/etc. to PNG via Canvas
+// convertImage: keeps JPEG/PNG/GIF as-is; converts SVG/WebP/AVIF/etc. to PNG via Canvas.
+// SVG까지 PNG로 바꾸는 이유: 마크다운 렌더러(markdown-it — VS Code 프리뷰·GitHub)가
+// XSS 방어로 data:image/svg+xml을 차단해서, Base64 임베드하면 프리뷰에 안 보인다.
 async function convertImage(dataUrl, mime) {
-  if (mime === 'png')     return { dataUrl, ext: 'png' };
-  if (mime === 'jpeg')    return { dataUrl, ext: 'jpg' };
-  if (mime === 'gif')     return { dataUrl, ext: 'gif' };
-  if (mime === 'svg+xml') return { dataUrl, ext: 'svg' };
+  if (mime === 'png')  return { dataUrl, ext: 'png' };
+  if (mime === 'jpeg') return { dataUrl, ext: 'jpg' };
+  if (mime === 'gif')  return { dataUrl, ext: 'gif' };
+  const src = mime === 'svg+xml' ? svgWithIntrinsicSize(dataUrl) : dataUrl;
   return new Promise(resolve => {
     const img = new Image();
     img.onload = () => {
@@ -377,9 +379,31 @@ async function convertImage(dataUrl, mime) {
       c.getContext('2d').drawImage(img, 0, 0);
       resolve({ dataUrl: c.toDataURL('image/png'), ext: 'png' });
     };
-    img.onerror = () => resolve({ dataUrl, ext: 'png' });
-    img.src = dataUrl;
+    // 변환 실패 시 원본 유지 — SVG는 확장자도 원래대로 되돌린다.
+    img.onerror = () => resolve({ dataUrl, ext: mime === 'svg+xml' ? 'svg' : 'png' });
+    img.src = src;
   });
+}
+
+// width/height 없이 viewBox만 있는 SVG는 Canvas가 기본값 150x150으로 그린다.
+// viewBox의 크기를 명시해 원래 해상도로 래스터화되게 한다.
+function svgWithIntrinsicSize(dataUrl) {
+  try {
+    const cut  = dataUrl.indexOf(',');
+    const head = dataUrl.slice(0, cut);
+    const isB64 = head.includes(';base64');
+    // base64는 바이트 문자열, 아니면 유니코드 문자열로 풀린다 — 재인코딩 방식이 다르다.
+    let text = isB64 ? atob(dataUrl.slice(cut + 1))
+                     : decodeURIComponent(dataUrl.slice(cut + 1));
+    if (/<svg[^>]*\swidth=/i.test(text)) return dataUrl;
+    const vb = (text.match(/viewBox="([^"]+)"/i)?.[1] || '').trim().split(/[\s,]+/);
+    if (vb.length !== 4) return dataUrl;
+    text = text.replace(/<svg/i, `<svg width="${vb[2]}" height="${vb[3]}"`);
+    return 'data:image/svg+xml;base64,' +
+      btoa(isB64 ? text : unescape(encodeURIComponent(text)));
+  } catch (_) {
+    return dataUrl;
+  }
 }
 
 function cleanDoc(doc, removeNoise) {
