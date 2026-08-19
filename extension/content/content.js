@@ -127,11 +127,24 @@ function extractHtml() {
     return Math.max(light, shadow);
   }
 
+  // serializeDeep이 건너뛰는 요소(display:none·visibility:hidden)는 후보에서 제외한다.
+  // innerText는 렌더링되지 않는 요소에서 textContent로 대체되므로 숨은 컨테이너가
+  // 길이 경쟁에서 이길 수 있는데, 그걸 고르면 직렬화 결과가 빈 문자열이 된다.
+  // (구글 검색 AI 모드: 예전 결과 컬럼 #center_col[role="main"]이 display:none으로 남아 있어
+  //  실제 답변이 있는 #main 대신 그쪽이 뽑혀 본문이 통째로 비었다)
+  function isHidden(el) {
+    try {
+      const cs = window.getComputedStyle(el);
+      return cs.display === 'none' || cs.visibility === 'hidden';
+    } catch (_) { return false; }
+  }
+
   // Use deepQueryAll so we find elements inside shadow roots (e.g. FluidTopics)
   let best = null;
   let bestLen = 0;
   for (const sel of CONTENT_SELS) {
     for (const el of deepQueryAll(document, sel)) {
+      if (isHidden(el)) continue;
       const len = textLen(el);
       if (len > bestLen) { best = el; bestLen = len; }
     }
@@ -141,7 +154,9 @@ function extractHtml() {
     `<!DOCTYPE html><html><head><title>${document.title}</title></head><body>${body}</body></html>`;
 
   if (best && bestLen > 200) {
-    return wrap(serializeDeep(best));
+    // 후보 자체는 보여도 내부가 전부 숨겨져 직렬화 결과가 비는 경우가 있어 한 번 더 확인한다.
+    const html = serializeDeep(best);
+    if (html.length > 200) return wrap(html);
   }
 
   // Full page fallback — always use serializeDeep to capture any shadow DOM
