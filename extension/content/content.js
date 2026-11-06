@@ -200,6 +200,8 @@ async function extractChatTranscript() {
     return `<div class="claude-assistant-message">${clone.outerHTML}</div>`;
   };
 
+  // 가상 스크롤은 위로 이동한 직후에도 아래쪽 행을 먼저 렌더링할 수 있어 발견 순서가
+  // 대화 순서와 다르다. key→html로 모아 두고 마지막에 data-index 순으로 정렬한다.
   const seen = new Set();
   const parts = [];
   const collect = () => {
@@ -211,7 +213,7 @@ async function extractChatTranscript() {
       const html = rowHtml(row);
       if (!html) continue;
       seen.add(key);
-      parts.push(html);
+      parts.push({ key, html });
     }
   };
 
@@ -241,10 +243,12 @@ async function extractChatTranscript() {
   }
 
   if (!parts.length) return extractHtml();
+  // 키가 전부 숫자(data-index)일 때만 정렬한다. 텍스트 대체 키면 발견 순서를 유지한다.
+  if (parts.every(p => /^\d+$/.test(p.key))) parts.sort((a, b) => a.key - b.key);
 
   const wrap = (body) =>
     `<!DOCTYPE html><html><head><title>${document.title}</title></head><body>${body}</body></html>`;
-  return wrap(`<article>${parts.join('\n')}</article>`);
+  return wrap(`<article>${parts.map(p => p.html).join('\n')}</article>`);
 }
 
 // Recursively serializes an element including its shadow DOM content.
