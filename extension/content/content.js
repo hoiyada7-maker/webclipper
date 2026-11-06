@@ -187,13 +187,17 @@ async function extractChatTranscript() {
   }
 
   // transcript-row 하나 = 메시지 하나. 유저는 user-message 테스트 ID,
-  // 어시스턴트는 font-claude-response 클래스로 구분한다.
+  // 어시스턴트는 assistant-message 테스트 ID(구 UI: font-claude-response 클래스)로 구분한다.
   const rowHtml = row => {
     const user = row.querySelector('[data-testid="user-message"]');
     if (user) return user.outerHTML;
-    const asst = row.querySelector('.font-claude-response');
-    if (asst) return `<div class="claude-assistant-message">${asst.outerHTML}</div>`;
-    return null;
+    const asst = row.querySelector('[data-testid="assistant-message"]')
+      ?? row.querySelector('.font-claude-response');
+    if (!asst) return null;
+    // 스크린리더용 "Claude responded:" 제목은 본문이 아니므로 뺀다.
+    const clone = asst.cloneNode(true);
+    clone.querySelectorAll('.sr-only').forEach(e => e.remove());
+    return `<div class="claude-assistant-message">${clone.outerHTML}</div>`;
   };
 
   const seen = new Set();
